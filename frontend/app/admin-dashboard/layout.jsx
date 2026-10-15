@@ -3,6 +3,8 @@ import { createClient } from "@/utils/supabase/server";
 import Link from "next/link";
 import { ShieldCheck, LogOut, ExternalLink } from "lucide-react";
 
+import AdminSidebar from "@/components/admin/AdminSidebar";
+
 export default async function AdminLayout({ children }) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -26,8 +28,8 @@ export default async function AdminLayout({ children }) {
   return (
     <div className="min-h-screen bg-[#181A2A] text-white">
       {/* Top Admin Navigation Header */}
-      <header className="fixed top-0 left-0 right-0 z-50 bg-[#181A2A]/95 backdrop-blur-md border-b border-white/10 px-6 py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <header className="fixed top-0 left-0 right-0 z-50 bg-[#181A2A]/95 backdrop-blur-md border-b border-white/10 px-4 sm:px-6 py-3.5 flex items-center justify-between">
+        <div className="flex items-center gap-3 pl-12 md:pl-0">
           <div className="h-9 w-9 rounded-xl bg-[#a78bfa]/10 border border-[#a78bfa]/20 flex items-center justify-center text-[#a78bfa]">
             <ShieldCheck size={20} />
           </div>
@@ -51,28 +53,16 @@ export default async function AdminLayout({ children }) {
           >
             App Main Site <ExternalLink size={12} />
           </Link>
-          <form
-            action={async () => {
-              "use server";
-              const supabase = await createClient();
-              await supabase.auth.signOut();
-              redirect("/admin-login");
-            }}
-          >
-            <button
-              type="submit"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 font-semibold transition"
-            >
-              <LogOut size={13} /> Sign Out
-            </button>
-          </form>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="pt-8">
-        {children}
-      </main>
+      {/* Admin Shell: Sidebar + Content */}
+      <div className="flex min-h-[calc(100vh-61px)]">
+        <AdminSidebar userEmail={user.email} />
+        <main className="flex-1 md:pl-[220px] min-w-0 transition-all duration-200">
+          {children}
+        </main>
+      </div>
     </div>
   );
 }

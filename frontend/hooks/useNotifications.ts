@@ -31,14 +31,32 @@ export function useNotifications() {
       const token = sessionData.session?.access_token;
       if (!token) return;
 
-      const res = await fetch(`${API_BASE}/api/notifications?limit=100`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      let loaded = false;
+      try {
+        const res = await fetch(`${API_BASE}/api/notifications?limit=100`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
 
-      if (!res.ok) return;
-      const { notifications: data, unreadCount: count } = await res.json();
-      setNotifications(data || []);
-      setUnreadCount(count || 0);
+        if (res.ok) {
+          const { notifications: data, unreadCount: count } = await res.json();
+          setNotifications(data || []);
+          setUnreadCount(count || 0);
+          loaded = true;
+        }
+      } catch { /* fallback to direct Supabase query */ }
+
+      if (!loaded && sessionData.session?.user?.id) {
+        const { data: dbNotifs } = await supabase
+          .from('notifications')
+          .select('*')
+          .eq('user_id', sessionData.session.user.id)
+          .order('created_at', { ascending: false })
+          .limit(50);
+        if (dbNotifs) {
+          setNotifications(dbNotifs as AppNotification[]);
+          setUnreadCount(dbNotifs.filter((n: any) => !n.is_read).length);
+        }
+      }
     } catch { /* silent */ }
   }, []);
 

@@ -1,171 +1,233 @@
 import { createClient } from "@/utils/supabase/server";
-import { CheckCircle, Clock, ShieldCheck, Building2, User, FileText, UserX, ShieldAlert, Activity } from "lucide-react";
-import { adminVerifyKYC, adminVerifyKYB, adminRevokeKYC, adminRevokeKYB } from "@/lib/action";
-import Link from "next/link";
+import { supabaseAdmin } from "@/utils/supabase/admin";
+import { ShieldCheck } from "lucide-react";
+import KYCVerificationManager from "@/components/admin/KYCVerificationManager";
 
-export default async function AdminDashboardPage() {
+export default async function AdminKYCKYBPage() {
   const supabase = await createClient();
 
-  // 1. Fetch pending & verified KYC users
-  const [{ data: pendingUsers }, { data: verifiedUsers }] = await Promise.all([
-    supabase.from("profiles").select("*").eq("identity_verified", false).order("created_at", { ascending: false }),
-    supabase.from("profiles").select("*").eq("identity_verified", true).order("created_at", { ascending: false }).limit(10),
+  // shafqaat implemented — Fetch ALL non-verified KYC users (pending, declined, in-review)
+  // using supabaseAdmin to bypass RLS so all user profiles and sessions are visible
+  const [{ data: allUnverifiedUsers }, { data: verifiedUsers }] = await Promise.all([
+    supabaseAdmin
+      .from("profiles")
+      .select("*")
+      .eq("identity_verified", false)
+      .order("created_at", { ascending: false }),
+    supabaseAdmin
+      .from("profiles")
+      .select("*")
+      .eq("identity_verified", true)
+      .order("created_at", { ascending: false })
+      .limit(50),
   ]);
 
-  // 2. Fetch pending KYB businesses
-  const { data: pendingBusinesses } = await supabase
-    .from("businesses")
-    .select("*, profiles(full_name, user_id, business_reg_url, tax_cert_url, bank_statement_url)")
-    .eq("kyb_verified", false)
-    .order("created_at", { ascending: false });
+  // Fetch KYB businesses (pending & verified) using supabaseAdmin
+  const [{ data: pendingBusinesses }, { data: verifiedBusinesses }] = await Promise.all([
+    supabaseAdmin
+      .from("businesses")
+      .select("*, profiles(full_name, user_id, business_reg_url, tax_cert_url, bank_statement_url)")
+      .eq("kyb_verified", false)
+      .order("created_at", { ascending: false }),
+    supabaseAdmin
+      .from("businesses")
+      .select("*, profiles(full_name, user_id, business_reg_url, tax_cert_url, bank_statement_url)")
+      .eq("kyb_verified", true)
+      .order("created_at", { ascending: false }),
+  ]);
+
+  // shafqaat implemented — Fetch verification_sessions to classify unverified users into:
+  // - "in_review"  → Didit returned "In Review" / "Needs Review" (admin must manually approve)
+  // - "declined"   → Didit returned "Declined" / "Rejected"
+  // - "pending"    → No Didit session yet, or session is Not Started
+  let diditSessions = [];
+  try {
+    const { data: sessions, error } = await supabaseAdmin
+      .from("verification_sessions")
+      .select(`
+        didit_session_id,
+        entity_type,
+        entity_id,
+        session_kind,
+        status,
+        decision,
+        created_at,
+        updated_at,
+        first_name,
+        last_name,
+        date_of_birth,
+        nationality,
+        document_type,
+        document_number,
+        personal_number,
+        issuing_state,
+        expiration_date,
+        gender,
+        liveness_score,
+        liveness_status,
+        face_match_score,
+        face_match_status,
+        aml_status,
+        aml_hits,
+        device_ip,
+        device_country,
+        device_platform,
+        is_vpn,
+        company_name,
+        registration_number,
+        company_type,
+        incorporation_date,
+        company_status,
+        company_country,
+        kyb_key_people,
+        admin_override_status,
+        admin_override_reason,
+        admin_override_at,
+        didit_decision_payload
+      `)
+      .order("created_at", { ascending: false });
+
+    if (!error && sessions) {
+      diditSessions = sessions;
+    } else if (error) {
+      console.warn("[Admin KYC/KYB] Enriched columns not found, falling back:", error.message);
+      const { data: fallbackSessions } = await supabaseAdmin
+        .from("verification_sessions")
+        .select("didit_session_id, entity_type, entity_id, session_kind, status, decision, created_at, updated_at")
+        .order("created_at", { ascending: false });
+      if (fallbackSessions) diditSessions = fallbackSessions;
+    }
+  } catch (err) {
+    console.warn("Could not query verification_sessions:", err);
+  }
+
+  // ── Auto-Sync Active Didit Sessions from Didit REST API ───────────────────
+  // If Didit webhooks are blocked/tunnel was down, query Didit directly so admin sees live state
+  const apiKey = process.env.DIDIT_API_KEY;
+  if (apiKey && diditSessions.length > 0) {
+    const { fetchAndStoreDiditDecision } = await import("@/lib/diditServer");
+    // Check sessions that are not finalized or missing decision
+    const checkCandidates = diditSessions.filter(
+      (s) => s.status === 'Not Started' || s.status === 'In Progress' || !s.decision
+    ).slice(0, 10);
+
+    for (const s of checkCandidates) {
+      try {
+        const res = await fetch(`https://verification.didit.me/v3/session/${s.didit_session_id}/`, {
+          headers: { 'x-api-key': apiKey },
+          cache: 'no-store',
+        });
+        if (res.ok) {
+          const diditData = await res.json();
+          const statusChanged = diditData.status && (diditData.status !== s.status || diditData.decision !== s.decision);
+          const needsEnrichment = !s.didit_decision_payload && diditData.status !== 'Not Started';
+
+          if (statusChanged || needsEnrichment) {
+            s.status = diditData.status || s.status;
+            s.decision = diditData.decision || s.decision;
+            const enrichment = await fetchAndStoreDiditDecision(s.didit_session_id);
+            if (enrichment) {
+              Object.assign(s, enrichment);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[Auto-sync] Error checking session ${s.didit_session_id}:`, err);
+      }
+    }
+  }
+
+  // shafqaat implemented — Build userId → latest KYC session map for classification
+  const userSessionMap = {};
+  for (const s of diditSessions) {
+    if (s.session_kind === "KYC" && s.entity_id) {
+      const existing = userSessionMap[s.entity_id];
+      if (!existing || new Date(s.updated_at) > new Date(existing.updated_at)) {
+        userSessionMap[s.entity_id] = s;
+      }
+    }
+  }
+
+  // shafqaat implemented — Classify unverified users into three buckets
+  const pendingUsers = [];
+  const inReviewUsers = [];
+  const declinedUsers = [];
+
+  for (const u of allUnverifiedUsers || []) {
+    const session = userSessionMap[u.user_id];
+    if (!session) {
+      pendingUsers.push({ ...u, _kyc_session_status: "No Session" });
+      continue;
+    }
+    const effectiveStatus = session.admin_override_status
+      ? session.admin_override_status.toLowerCase()
+      : (session.status || "").toLowerCase();
+
+    if (
+      effectiveStatus === "in review" || effectiveStatus === "in_review" ||
+      effectiveStatus === "needs review" || effectiveStatus === "needs_review" ||
+      effectiveStatus === "review"
+    ) {
+      inReviewUsers.push({
+        ...u,
+        _kyc_session_status: session.status,
+        _didit_session_id: session.didit_session_id,
+      });
+    } else if (effectiveStatus === "declined" || effectiveStatus === "rejected") {
+      declinedUsers.push({
+        ...u,
+        _kyc_session_status: session.status,
+        _didit_session_id: session.didit_session_id,
+        _decline_reason: session.decision,
+      });
+    } else {
+      pendingUsers.push({ ...u, _kyc_session_status: session.status });
+    }
+  }
+
+  // Fetch Admin Actions Audit Trail
+  let adminActions = [];
+  try {
+    const { data: actions, error: actErr } = await supabaseAdmin
+      .from("admin_actions")
+      .select("id, admin_id, action, target_type, target_id, reason, created_at")
+      .or("target_type.in.(profile,business,verification_session),action.in.(verify_kyc,reject_kyc,revoke_kyc,verify_kyb,reject_kyb,revoke_kyb,didit_override)")
+      .order("created_at", { ascending: false })
+      .limit(100);
+
+    if (!actErr && actions) {
+      adminActions = actions;
+    } else if (actErr) {
+      console.warn("[Admin KYC/KYB] Error fetching admin_actions:", actErr.message);
+    }
+  } catch (err) {
+    console.warn("Could not query admin_actions:", err);
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 pt-24">
-      <div className="mb-8 border-b border-white/10 pb-6 flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
-        <div>
-          <h1 className="text-3xl font-black text-white mb-2 flex items-center gap-3">
-            <ShieldCheck className="text-[#a78bfa] h-8 w-8" />
-            Admin Verification & Governance Portal
-          </h1>
-          <p className="text-gray-400">Review KYC/KYB identity submissions, grant or revoke verification credentials, and oversee platform integrity.</p>
-        </div>
-        <div className="flex gap-3 flex-wrap">
-          <Link
-            href="/admin-dashboard/audit-log"
-            className="px-4 py-2 rounded-xl bg-[#a78bfa]/10 hover:bg-[#a78bfa]/20 text-[#a78bfa] border border-[#a78bfa]/20 text-sm font-semibold transition flex items-center gap-2"
-          >
-            <FileText className="h-4 w-4" /> Campaign Moderation
-          </Link>
-          <Link
-            href="/admin-dashboard/marketplace"
-            className="px-4 py-2 rounded-xl bg-[#a78bfa]/10 hover:bg-[#a78bfa]/20 text-[#a78bfa] border border-[#a78bfa]/20 text-sm font-semibold transition flex items-center gap-2"
-          >
-            <Activity className="h-4 w-4" /> Marketplace Orders
-          </Link>
-        </div>
+      {/* Top Header */}
+      <div className="mb-8 border-b border-white/10 pb-6">
+        <h1 className="text-3xl font-black text-white mb-2 flex items-center gap-3">
+          <ShieldCheck className="text-[#a78bfa] h-8 w-8" />
+          Admin Verification &amp; Governance Portal
+        </h1>
+        <p className="text-gray-400">
+          Review KYC/KYB identity submissions, inspect Didit biometric scores, approve or reject credentials, and oversee platform integrity.
+        </p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* ── KYC Verification Section ── */}
-        <div className="bg-[#1a2030] rounded-3xl border border-white/5 overflow-hidden">
-          <div className="p-6 border-b border-white/5 bg-white/[0.02] flex items-center justify-between">
-            <h2 className="text-xl font-bold text-white flex items-center gap-2">
-              <User className="h-5 w-5 text-[#a78bfa]" /> Pending KYC ({pendingUsers?.length || 0})
-            </h2>
-          </div>
-          <div className="divide-y divide-white/5 max-h-[400px] overflow-y-auto">
-            {pendingUsers?.length === 0 ? (
-              <p className="p-6 text-gray-500 text-center text-sm">No pending KYC requests.</p>
-            ) : (
-              pendingUsers?.map((user) => (
-                <div key={user.user_id} className="p-6 flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center hover:bg-white/[0.02] transition">
-                  <div>
-                    <h3 className="font-semibold text-white">{user.full_name || "Unknown User"}</h3>
-                    <p className="text-sm text-gray-400 font-mono text-xs">{user.user_id}</p>
-                    <div className="mt-2 flex gap-3 text-xs">
-                      {user.national_id_url && (
-                        <Link href={user.national_id_url} target="_blank" className="text-[#a78bfa] hover:underline flex items-center gap-1">
-                          <FileText className="h-3 w-3" /> ID Doc
-                        </Link>
-                      )}
-                      {user.selfie_url && (
-                        <Link href={user.selfie_url} target="_blank" className="text-[#a78bfa] hover:underline flex items-center gap-1">
-                          <FileText className="h-3 w-3" /> Selfie
-                        </Link>
-                      )}
-                    </div>
-                  </div>
-                  <form action={async () => {
-                    "use server";
-                    await adminVerifyKYC(user.user_id);
-                  }}>
-                    <button type="submit" className="px-4 py-2 bg-green-500/10 hover:bg-green-500/20 text-green-400 border border-green-500/20 rounded-lg text-sm font-semibold transition flex items-center gap-2 whitespace-nowrap">
-                      <CheckCircle className="h-4 w-4" /> Approve KYC
-                    </button>
-                  </form>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* ── KYB Verification Section ── */}
-        <div className="bg-[#1a2030] rounded-3xl border border-white/5 overflow-hidden">
-          <div className="p-6 border-b border-white/5 bg-white/[0.02] flex items-center justify-between">
-            <h2 className="text-xl font-bold text-white flex items-center gap-2">
-              <Building2 className="h-5 w-5 text-[#a78bfa]" /> Pending KYB ({pendingBusinesses?.length || 0})
-            </h2>
-          </div>
-          <div className="divide-y divide-white/5 max-h-[400px] overflow-y-auto">
-            {pendingBusinesses?.length === 0 ? (
-              <p className="p-6 text-gray-500 text-center text-sm">No pending KYB requests.</p>
-            ) : (
-              pendingBusinesses?.map((biz) => (
-                <div key={biz.id} className="p-6 flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center hover:bg-white/[0.02] transition">
-                  <div>
-                    <h3 className="font-semibold text-white">{biz.business_name}</h3>
-                    <p className="text-sm text-gray-400 text-xs">Owner: {biz.profiles?.full_name}</p>
-                    
-                    <div className="mt-2 flex flex-wrap gap-3 text-xs">
-                      {biz.profiles?.business_reg_url && (
-                        <Link href={biz.profiles.business_reg_url} target="_blank" className="text-[#a78bfa] hover:underline flex items-center gap-1">
-                          <FileText className="h-3 w-3" /> Reg Doc
-                        </Link>
-                      )}
-                      {biz.profiles?.tax_cert_url && (
-                        <Link href={biz.profiles.tax_cert_url} target="_blank" className="text-[#a78bfa] hover:underline flex items-center gap-1">
-                          <FileText className="h-3 w-3" /> Tax Cert
-                        </Link>
-                      )}
-                    </div>
-                  </div>
-                  <form action={async () => {
-                    "use server";
-                    await adminVerifyKYB(biz.id);
-                  }}>
-                    <button type="submit" className="px-4 py-2 bg-green-500/10 hover:bg-green-500/20 text-green-400 border border-green-500/20 rounded-lg text-sm font-semibold transition flex items-center gap-2 whitespace-nowrap">
-                      <CheckCircle className="h-4 w-4" /> Approve KYB
-                    </button>
-                  </form>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* ── Verified Users & Revoke Section ── */}
-      <div className="mt-10 bg-[#1a2030] rounded-3xl border border-white/5 overflow-hidden">
-        <div className="p-6 border-b border-white/5 bg-white/[0.02] flex items-center justify-between">
-          <h2 className="text-xl font-bold text-white flex items-center gap-2">
-            <CheckCircle className="h-5 w-5 text-emerald-400" /> Active Verified Profiles ({verifiedUsers?.length || 0})
-          </h2>
-          <span className="text-xs text-gray-400">Admins can revoke verification if suspicious activity occurs</span>
-        </div>
-        <div className="divide-y divide-white/5">
-          {verifiedUsers?.map((user) => (
-            <div key={user.user_id} className="p-5 flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center hover:bg-white/[0.02] transition">
-              <div>
-                <h3 className="font-semibold text-white flex items-center gap-2">
-                  {user.full_name || "Verified Investor"}
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                    KYC Active
-                  </span>
-                </h3>
-                <p className="text-xs text-gray-400 font-mono mt-0.5">{user.user_id} · {user.wallet_address || 'No Wallet'}</p>
-              </div>
-              <form action={async () => {
-                "use server";
-                await adminRevokeKYC(user.user_id);
-              }}>
-                <button type="submit" className="px-3.5 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 whitespace-nowrap">
-                  <UserX className="h-3.5 w-3.5" /> Revoke Verification
-                </button>
-              </form>
-            </div>
-          ))}
-        </div>
-      </div>
+      {/* Main Verification Manager */}
+      <KYCVerificationManager
+        pendingUsers={pendingUsers}
+        inReviewUsers={inReviewUsers}
+        declinedUsers={declinedUsers}
+        verifiedUsers={verifiedUsers || []}
+        pendingBusinesses={pendingBusinesses || []}
+        verifiedBusinesses={verifiedBusinesses || []}
+        diditSessions={diditSessions}
+        adminActions={adminActions}
+      />
     </div>
   );
 }

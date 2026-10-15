@@ -555,9 +555,18 @@ export async function saveCreatorProfile(profileData: any) {
   };
 
   // shafqaat — Upsert into the existing 'profiles' table (not creator_profiles)
-  const { error } = await supabase
+  let { error } = await supabase
     .from("profiles")
     .upsert([row], { onConflict: "user_id" });
+
+  if (error && (error.message?.includes("avatar_url") || error.message?.includes("business_logo_url"))) {
+    console.warn("[saveCreatorProfile] Column missing from Supabase profiles schema cache, retrying without avatar/logo columns:", error.message);
+    const { avatar_url, business_logo_url, ...fallbackRow } = row;
+    const retry = await supabase
+      .from("profiles")
+      .upsert([fallbackRow], { onConflict: "user_id" });
+    error = retry.error;
+  }
 
   if (error) {
     console.error("[saveCreatorProfile] Supabase error:", error.message);
@@ -644,6 +653,19 @@ async function sendSystemNotification(payload: {
   metadata?: any;
 }) {
   try {
+    // 1. Always persist directly to Supabase notifications table
+    await supabaseAdmin.from('notifications').insert([
+      {
+        user_id: payload.userId,
+        type: payload.type,
+        title: payload.title,
+        message: payload.message,
+        link: payload.link || '/profile',
+        metadata: payload.metadata || {},
+      },
+    ]);
+
+    // 2. Also attempt real-time Socket.IO emission if backend is available
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
     await fetch(`${apiUrl}/api/notifications/system-emit`, {
       method: "POST",
@@ -652,7 +674,7 @@ async function sendSystemNotification(payload: {
         "x-system-key": process.env.SYSTEM_NOTIF_KEY || "fxp-system-secret",
       },
       body: JSON.stringify(payload),
-    });
+    }).catch(() => {});
   } catch (err) {
     console.error("[sendSystemNotification] error sending system notification:", err);
   }
@@ -824,6 +846,291 @@ export async function adminRevokeKYB(businessId: string) {
   await logAdminAction(supabase, adminUser.id, "revoke_kyb", "business", businessId, "Admin revoked KYB status");
   revalidatePath("/admin-dashboard");
   return { success: true };
+}
+
+export async function adminRejectKYC(userId: string, reason: string = "Submitted documents did not meet verification criteria") {
+  const supabase = await createClient();
+  const adminUser = await checkAdmin(supabase);
+  if (!adminUser) return { error: "Unauthorized: Admins only" };
+
+  const { error } = await supabase
+    .from("profiles")
+    .update({ identity_verified: false })
+    .eq("user_id", userId);
+
+  if (error) return { error: error.message };
+
+  // Update any linked Didit verification session
+  try {
+    await supabase
+      .from("verification_sessions")
+      .update({
+        status: "Declined",
+        decision: reason,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("entity_id", userId)
+      .eq("session_kind", "KYC");
+  } catch (e) {
+    // Non-fatal if table/row missing
+  }
+
+  await logAdminAction(supabase, adminUser.id, "reject_kyc", "profile", userId, `Admin rejected KYC: ${reason}`);
+
+  await sendSystemNotification({
+    userId,
+    type: "kyc_status",
+    title: "KYC Verification Rejected",
+    message: `Your KYC identity verification could not be approved: ${reason}. Please re-submit your documents or complete verification via Didit.`,
+    link: "/profile",
+  });
+
+  revalidatePath("/admin-dashboard");
+  revalidatePath("/admin-dashboard/kyc-kyb-analytics");
+  return { success: true };
+}
+
+export async function adminRejectKYB(businessId: string, reason: string = "Submitted business registration documents did not meet criteria") {
+  const supabase = await createClient();
+  const adminUser = await checkAdmin(supabase);
+  if (!adminUser) return { error: "Unauthorized: Admins only" };
+
+  const { error } = await supabase
+    .from("businesses")
+    .update({ kyb_verified: false })
+    .eq("id", businessId);
+
+  if (error) return { error: error.message };
+
+  // Update any linked Didit verification session
+  try {
+    await supabase
+      .from("verification_sessions")
+      .update({
+        status: "Declined",
+        decision: reason,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("entity_id", businessId)
+      .eq("session_kind", "KYB");
+  } catch (e) {
+    // Non-fatal if table/row missing
+  }
+
+  await logAdminAction(supabase, adminUser.id, "reject_kyb", "business", businessId, `Admin rejected KYB: ${reason}`);
+
+  // Fetch business owner to send notification
+  const { data: business } = await supabase
+    .from("businesses")
+    .select("owner_id, business_name")
+    .eq("id", businessId)
+    .maybeSingle();
+
+  if (business?.owner_id) {
+    await sendSystemNotification({
+      userId: business.owner_id,
+      type: "kyb_status",
+      title: "KYB Business Verification Rejected",
+      message: `Your business verification for "${business.business_name || 'Business'}" was rejected: ${reason}. Please update your business documentation.`,
+      link: "/profile",
+    });
+  }
+
+  revalidatePath("/admin-dashboard");
+  revalidatePath("/admin-dashboard/kyc-kyb-analytics");
+  return { success: true };
+}
+
+// ── Admin Didit Session Override ──────────────────────────────────────────────
+export async function adminSetDiditOverride(
+  sessionId: string,
+  overrideStatus: "Approved" | "Declined" | null,
+  reason?: string
+) {
+  const supabase = await createClient();
+  const adminUser = await checkAdmin(supabase);
+  if (!adminUser) return { error: "Unauthorized: Admins only" };
+
+  const { error } = await supabase
+    .from("verification_sessions")
+    .update({
+      admin_override_status: overrideStatus,
+      admin_override_reason: reason || null,
+      admin_override_by: adminUser.id,
+      admin_override_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("didit_session_id", sessionId);
+
+  if (error) return { error: error.message };
+
+  await logAdminAction(
+    supabase,
+    adminUser.id,
+    "didit_override",
+    "verification_session",
+    sessionId,
+    `Admin set Didit override: ${overrideStatus ?? "cleared"} — ${reason || ""}`
+  );
+
+  revalidatePath("/admin-dashboard/kyc-kyb-analytics");
+  return { success: true };
+}
+
+// ── Admin: Send a custom or template notification to a user about their KYC/KYB ──
+export async function adminSendKYCNotification(
+  userId: string,
+  title: string,
+  message: string,
+  link: string = "/profile",
+  notifType: string = "kyc_status"
+) {
+  const supabase = await createClient();
+  const adminUser = await checkAdmin(supabase);
+  if (!adminUser) return { error: "Unauthorized: Admins only" };
+
+  await sendSystemNotification({ userId, type: notifType, title, message, link });
+
+  await logAdminAction(
+    supabase,
+    adminUser.id,
+    "send_kyc_notification",
+    "profile",
+    userId,
+    `Admin sent notification: "${title}" — ${message.slice(0, 80)}`
+  );
+
+  revalidatePath("/admin-dashboard/kyc-kyb-analytics");
+  return { success: true };
+}
+
+// ── Admin: Approve KYC with custom notification message ──────────────────────
+export async function adminApproveKYCWithMessage(
+  userId: string,
+  customMessage?: string
+) {
+  const supabase = await createClient();
+  const adminUser = await checkAdmin(supabase);
+  if (!adminUser) return { error: "Unauthorized: Admins only" };
+
+  const { error } = await supabase
+    .from("profiles")
+    .update({ identity_verified: true })
+    .eq("user_id", userId);
+
+  if (error) return { error: error.message };
+
+  // Also update any In Review session to Approved
+  await supabase
+    .from("verification_sessions")
+    .update({
+      admin_override_status: "Approved",
+      admin_override_by: adminUser.id,
+      admin_override_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("entity_id", userId)
+    .eq("session_kind", "KYC");
+
+  await logAdminAction(supabase, adminUser.id, "verify_kyc", "profile", userId, "Admin manually approved KYC after Didit review");
+
+  const msg = customMessage?.trim() ||
+    "Your KYC identity verification has been approved by our compliance team! You can now invest in campaigns and trade tokens on the secondary market.";
+
+  await sendSystemNotification({
+    userId,
+    type: "kyc_status",
+    title: "Identity Verified ✓",
+    message: msg,
+    link: "/profile",
+  });
+
+  revalidatePath("/admin-dashboard/kyc-kyb-analytics");
+  return { success: true };
+}
+
+// ── Admin: Decline KYC with reason and custom message ────────────────────────
+export async function adminDeclineKYCWithMessage(
+  userId: string,
+  reason: string,
+  customMessage?: string
+) {
+  const supabase = await createClient();
+  const adminUser = await checkAdmin(supabase);
+  if (!adminUser) return { error: "Unauthorized: Admins only" };
+
+  const { error } = await supabase
+    .from("profiles")
+    .update({ identity_verified: false })
+    .eq("user_id", userId);
+
+  if (error) return { error: error.message };
+
+  await supabase
+    .from("verification_sessions")
+    .update({
+      status: "Declined",
+      decision: reason,
+      admin_override_status: "Declined",
+      admin_override_reason: reason,
+      admin_override_by: adminUser.id,
+      admin_override_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("entity_id", userId)
+    .eq("session_kind", "KYC");
+
+  await logAdminAction(supabase, adminUser.id, "reject_kyc", "profile", userId, `Admin declined KYC: ${reason}`);
+
+  const msg = customMessage?.trim() ||
+    `Your KYC identity verification could not be approved. Reason: ${reason}. Please re-submit with updated documents or contact our support team.`;
+
+  await sendSystemNotification({
+    userId,
+    type: "kyc_status",
+    title: "KYC Verification Declined",
+    message: msg,
+    link: "/profile",
+  });
+
+  revalidatePath("/admin-dashboard/kyc-kyb-analytics");
+  return { success: true };
+}
+
+
+export async function adminRefetchDiditSession(sessionId: string) {
+  const supabase = await createClient();
+  const adminUser = await checkAdmin(supabase);
+  if (!adminUser) return { error: "Unauthorized: Admins only" };
+
+  try {
+    const { fetchAndStoreDiditDecision } = await import("@/lib/diditServer");
+    const result = await fetchAndStoreDiditDecision(sessionId);
+    if (!result) {
+      return {
+        error: "Didit API returned no data. The user has likely not started or submitted their verification on Didit yet.",
+      };
+    }
+    revalidatePath("/admin-dashboard/kyc-kyb-analytics");
+    return { success: true, data: result };
+  } catch (err: any) {
+    return { error: err.message || "Could not re-fetch Didit session" };
+  }
+}
+
+export async function adminSyncAllDiditSessions() {
+  const supabase = await createClient();
+  const adminUser = await checkAdmin(supabase);
+  if (!adminUser) return { error: "Unauthorized: Admins only" };
+
+  try {
+    const { syncAllDiditSessions } = await import("@/lib/diditServer");
+    const result = await syncAllDiditSessions();
+    revalidatePath("/admin-dashboard/kyc-kyb-analytics");
+    return { success: true, ...result };
+  } catch (err: any) {
+    return { error: err.message || "Failed to sync Didit sessions" };
+  }
 }
 
 export async function adminToggleSecondaryTrading(campaignId: number, enabled: boolean) {

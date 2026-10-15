@@ -228,28 +228,44 @@ export default function ProfilePage() {
         const statusParam = searchParams.get("status");
         const sessionIdParam = searchParams.get("verificationSessionId");
 
-        if (statusParam === "Approved" || kycParam === "complete" || kybParam === "complete" || sessionIdParam) {
-          setVerificationSuccessMsg("Didit verification approved! Syncing profile status...");
-          if (statusParam === "Approved" || kycParam === "complete") {
-            await supabase.from("profiles").update({ identity_verified: true }).eq("user_id", user.id);
-          }
-          if (statusParam === "Approved" || kybParam === "complete") {
-            await supabase.from("businesses").update({ kyb_verified: true }).eq("owner_id", user.id);
+        if (statusParam === 'Approved' || kycParam === 'complete' || kybParam === 'complete' || sessionIdParam) {
+          setVerificationSuccessMsg('Didit verification completed! Syncing your status from Didit...');
+
+          // shafqaat implemented — Do NOT blindly set identity_verified=true here.
+          // The URL callback fires regardless of Didit's actual decision (Approved/Declined/In Review).
+          // Always use sync-status to get the real result from the Didit API.
+          try {
+            const syncRes = await fetch('/api/didit/sync-status', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ userId: user.id }),
+            });
+            const syncData = await syncRes.json();
+            if (syncData.updated) {
+              setVerificationSuccessMsg('Identity verified successfully! Your profile has been updated.');
+            } else {
+              // Not approved yet — may be In Review or Declined. Let the user see real status.
+              setVerificationSuccessMsg(
+                'Verification submission received! Your status will update when our review is complete. Check your notifications for updates.'
+              );
+            }
+          } catch (e) {
+            console.error('[profile callback] sync-status call failed:', e);
           }
 
           // Broadcast sync event to parent/original profile tab
           localStorage.setItem(
-            "didit_verified_event",
-            JSON.stringify({ type: kybParam === "complete" ? "kyb" : "kyc", timestamp: Date.now() })
+            'didit_verified_event',
+            JSON.stringify({ type: kybParam === 'complete' ? 'kyb' : 'kyc', timestamp: Date.now() })
           );
 
           if (window.opener && window.opener !== window) {
             setTimeout(() => {
               window.close();
-            }, 1000);
+            }, 1500);
           }
 
-          pollUntilVerified(kybParam === "complete" ? "kyb" : "kyc");
+          pollUntilVerified(kybParam === 'complete' ? 'kyb' : 'kyc');
           window.history.replaceState({}, document.title, window.location.pathname);
         }
       }
@@ -316,9 +332,9 @@ export default function ProfilePage() {
   const pollUntilVerified = async (type, attempts = 0) => {
     try {
       if (userId) {
-        await fetch("http://localhost:5000/api/didit/sync-status", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+        await fetch('/api/didit/sync-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId }),
         });
       }
@@ -366,11 +382,22 @@ export default function ProfilePage() {
       setVerifying(type);
       setError("");
       setVerificationSuccessMsg(`Starting ${type.toUpperCase()} verification session...`);
-      const res = await fetch(`http://localhost:5000/api/didit/${type}/create-session`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId }),
-      });
+      // Connect via internal Next.js API route with external backend fallback
+      let res;
+      try {
+        res = await fetch(`/api/didit/${type}/create-session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId }),
+        });
+      } catch (err) {
+        const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+        res = await fetch(`${apiBase}/api/didit/${type}/create-session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId }),
+        });
+      }
       const data = await res.json();
 
       if (!res.ok || !data.url) {
@@ -384,7 +411,9 @@ export default function ProfilePage() {
       console.error(err);
       setVerifying(null);
       setVerificationSuccessMsg("");
-      alert("Error starting Didit verification.");
+      const message = err?.message || "Error starting Didit verification.";
+      setError(message);
+      alert(`Didit Verification Error: ${message}`);
     }
   };
 

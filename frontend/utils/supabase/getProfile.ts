@@ -69,9 +69,18 @@ export async function updateProfile(fields: {
     if (!user) return { error: 'Not authenticated' };
 
     // Upsert so it works for first-time profiles too
-    const { error } = await supabase
+    let { error } = await supabase
         .from('profiles')
         .upsert({ user_id: user.id, ...fields }, { onConflict: 'user_id' });
+
+    if (error && (error.message?.includes('avatar_url') || error.message?.includes('business_logo_url'))) {
+        console.warn('[updateProfile] Column missing from Supabase profiles schema cache, retrying without avatar/logo columns:', error.message);
+        const { avatar_url, business_logo_url, ...fallbackFields } = fields;
+        const retry = await supabase
+            .from('profiles')
+            .upsert({ user_id: user.id, ...fallbackFields }, { onConflict: 'user_id' });
+        error = retry.error;
+    }
 
     if (error) {
         console.error('[updateProfile] Supabase error:', error.message);

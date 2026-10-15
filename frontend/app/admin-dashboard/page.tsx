@@ -10,6 +10,8 @@ import {
   ArrowRight,
   ArrowUpRight,
   LayoutDashboard,
+  ShieldCheck,
+  ArrowLeftRight,
 } from "lucide-react";
 import Link from "next/link";
 import MarketplaceTradingChart from "@/components/Marketplace/tradingChart";
@@ -134,22 +136,28 @@ export default async function AdminDashboardLandingPage() {
           <h2 className="text-lg font-bold text-white mb-4">Quick actions</h2>
           <div className="space-y-3">
             <QuickAction
-              href="/admin-dashboard/valuations"
+              href="/admin-dashboard/kyc-kyb-analytics"
+              icon={ShieldCheck}
+              title="KYC/KYB Analytics"
+              subtitle="Review and analyze user verification data"
+            />
+            <QuickAction
+              href="/admin-dashboard/marketplace"
+              icon={ArrowLeftRight}
+              title="Marketplace Oversight"
+              subtitle="Monitor sell orders and secondary bids"
+            />
+            <QuickAction
+              href="/admin-dashboard/campaigns"
               icon={Scale}
               title="Review Valuations"
-              subtitle="Approve pending campaign valuations"
+              subtitle="Approve campaigns and AI risk scores"
             />
             <QuickAction
               href="/admin-dashboard/audit-log"
               icon={ScrollText}
               title="Activity Log"
               subtitle="Approvals, rejections, deployments"
-            />
-            <QuickAction
-              href="/admin-dashboard/kyc-kyb-analytics"
-              icon={ScrollText}
-              title="KYC/KYB Analytics"
-              subtitle="Review and analyze user verification data"
             />
           </div>
         </div>
