@@ -6,6 +6,8 @@ import { Plus, Target, DollarSign, Eye, Edit2 } from "lucide-react";
 import { ethers } from "ethers";
 import BusinessCampaignJSON from "@/abis/BusinessCampaign.json";
 import CampaignReviewInfo from "@/components/campaign-review-info";
+import { logTransaction } from "@/utils/investmentUtils";
+import { createClient } from "@/utils/supabase/client";
 
 export interface CampaignItem {
   id: string | number;
@@ -69,39 +71,83 @@ export default function DashboardOverviewTab({
   loading = false,
 }: DashboardOverviewTabProps) {
   const [txPending, setTxPending] = useState<string | null>(null);
+  const supabase = createClient();
 
-  async function handleWithdrawFunds(contractAddress?: string | null) {
-    if (!contractAddress) return;
-    if (typeof window === "undefined" || !(window as any).ethereum) {
-      alert("Please install MetaMask!");
+  async function handleWithdrawFunds(campaign: CampaignItem) {
+  if (!campaign.contract_address) return;
+  if (typeof window === "undefined" || !(window as any).ethereum) {
+    alert("Please install MetaMask!");
+    return;
+  }
+
+  try {
+    setTxPending(String(campaign.id));
+
+    // 1. Get logged-in user from Supabase
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      alert("Please log in to withdraw funds.");
       return;
     }
 
-    try {
-      setTxPending(contractAddress);
-      await (window as any).ethereum.request({ method: "eth_requestAccounts" });
-      const provider = new ethers.BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
+    // 2. Connect MetaMask Signer
+    await (window as any).ethereum.request({ method: "eth_requestAccounts" });
+    const provider = new ethers.BrowserProvider((window as any).ethereum);
+    const signer = await provider.getSigner();
 
-      const campaignContract = new ethers.Contract(
-        contractAddress,
-        BusinessCampaignJSON.abi,
-        signer
-      );
+    const campaignContract = new ethers.Contract(
+      campaign.contract_address,
+      BusinessCampaignJSON.abi,
+      signer
+    );
 
-      const tx = await campaignContract.withdrawFunds();
-      alert(`Withdrawal transaction submitted! Hash: ${tx.hash}`);
+    // 3. Trigger smart contract withdrawal
+    const tx = await campaignContract.withdrawFunds();
+    alert(`Withdrawal transaction submitted! Hash: ${tx.hash}`);
 
-      await tx.wait();
+    // 4. Wait for on-chain confirmation
+    const receipt = await tx.wait();
+
+    if (receipt && receipt.status === 1) {
+      const withdrawAmount = parseFloat(String(campaign.amount_pledged ?? "0"));
+
+      // 5. Log the transaction in the database
+      try {
+        await logTransaction({
+          userId: user.id,
+          campaignId: campaign.id,
+          type: "withdrawal",
+          txHash: receipt.hash,
+          quantity: withdrawAmount,
+          token: "ETH" as any, // Cast if token type is strictly number in your definitions
+        });
+      } catch (logErr) {
+        console.error("Failed to log transaction:", logErr);
+      }
+
+      // 6. Update funds_withdrawn in campaigns table
+      const { error: updateError } = await supabase
+        .from("campaigns")
+        .update({
+          funds_withdrawn: true,
+          withdrawn_at: new Date().toISOString(),
+        })
+        .eq("id", campaign.id);
+
+      if (updateError) {
+        console.error("Failed to update campaign status:", updateError);
+      }
+
       alert("Funds successfully withdrawn to your wallet!");
       window.location.reload();
-    } catch (err: any) {
-      console.error("Withdrawal error:", err);
-      alert(err.reason || err.message || "Withdrawal failed");
-    } finally {
-      setTxPending(null);
     }
+  } catch (err: any) {
+    console.error("Withdrawal error:", err);
+    alert(err.reason || err.message || "Withdrawal failed");
+  } finally {
+    setTxPending(null);
   }
+}
 
   return (
     <div>
@@ -264,7 +310,7 @@ export default function DashboardOverviewTab({
                 <div className="flex items-center gap-3">
                   {isGoalReached && campaign.contract_address && (
                     <button
-                      onClick={() => handleWithdrawFunds(campaign.contract_address)}
+                      onClick={() => handleWithdrawFunds(campaign)}
                       disabled={txPending === campaign.contract_address}
                       className="bg-green-600 hover:bg-green-500 text-white text-xs font-bold px-4 py-2 rounded-full transition flex items-center gap-1.5 disabled:opacity-50"
                     >
