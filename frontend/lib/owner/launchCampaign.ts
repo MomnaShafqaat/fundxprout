@@ -1,7 +1,11 @@
 // frontend/lib/launchCampaign.ts
+'use server';
 import { ethers } from "ethers";
-import { getCampaignForLaunch, saveCampaignToDb } from "./action";
+import { getCampaignForLaunch, saveCampaignToDb } from "../action";
 import CampaignFactoryJSON from "@/abis/CampaignFactory.json";
+import { createClient } from "@/utils/supabase/server";
+import { convertUsdToEth } from "@/lib/common";
+
 
 // ⚠️ Hafsa has Updated this after redeploying CampaignFactory with the new event
 //const CONTRACT_ADDRESS = "0x2FCA6AF6d0C9FF4a129fEF46bD4bc4eA2A0B25d0";
@@ -30,11 +34,37 @@ export async function launchBusinessCampaign(
     return { error: "Submit this campaign for review and wait for approval before launching." };
   }
 
-  const campaign = await getCampaignForLaunch(campaignId);
-  if (campaign.error) return { error: campaign.error };
+  const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+  const { data: campaign , error } = await supabase
+    .from("campaigns")
+    .select("*")
+    .eq("id", campaignId)
+    .eq("owner", user?.id)
+    .maybeSingle();
+
+  if (error) return { error: error.message };
   
   if (campaign.status !== "approved" && campaign.status !== "adjusted") {
     return { error: "Campaign must be approved before it can be launched. campaign.status: " + campaign.status };
+  }
+
+  // Use the verified valuation from the database record rather than editable form input
+  const verifiedValuation = Number(campaign.valuation ?? 0);
+  const goalNum = Number(goal || 0);
+  const { ethAmount } = await convertUsdToEth(verifiedValuation);
+  const postMoney = ethAmount + goalNum;
+
+  // Recalculate equity dilution based on final goal launched on-chain
+  let equityOffered = Number(campaign.equity_offered ?? 0);
+  let equityRetained = Number(campaign.equity_retained ?? 100);
+
+  if (postMoney > 0 && goalNum > 0) {
+    equityOffered = Number(((goalNum / postMoney) * 100).toFixed(4));
+    equityRetained = Number((100 - equityOffered).toFixed(4));
   }
 
   const imageUrl = (formData.get("image_url") as string) ?? "";
@@ -135,6 +165,9 @@ export async function launchBusinessCampaign(
       deadline: deadlineIso,
       campaignId,
       valuation,
+      postmoney_valuation_eth: postMoney,
+      equity_offered: equityOffered,
+      equity_retained: equityRetained,
     });
 
     if (dbResult.error) return { error: dbResult.error };

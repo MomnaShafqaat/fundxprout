@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { CheckCircle, ExternalLink, Loader2, Pencil, XCircle } from "lucide-react";
-import { adminReviewCampaign } from "@/lib/action";
+import { adminReviewCampaign } from "@/lib/admin/review-campaign";
 import { useRouter } from "next/navigation";
 import RejectCampaignModal from "@/components/admin/reject-campaign-modal";
 

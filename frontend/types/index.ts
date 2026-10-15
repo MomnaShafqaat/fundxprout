@@ -4,12 +4,17 @@ export interface Token {
   symbol: string;
   contractAddress: string;
   balance: number;
+  amount: number;
   price: number;
   value: number;
+  equity_percent: number;
   change24h: number;
   priceHistory: number[];
   campaignId: string;
   color: string;
+  priceEth: number;
+  pricePerToken: number;
+  postmoneyValuation: number;
 }
 
 export interface Campaign {

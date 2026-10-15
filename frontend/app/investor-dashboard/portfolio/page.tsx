@@ -7,6 +7,8 @@ import {
 } from 'recharts';
 import { formatCurrency, formatNumber, formatPercent, truncateAddress } from '@/lib/formatters';
 import { getUserPortfolioData, getUserTokenHoldings, generatePortfolioTimeSeries } from '@/utils/supabase/getPortfolio';
+import { Token } from '@/types';
+import { calculateUserEquity } from '@/lib/equity/tokenEquity';
 
 // ── Badge helper ─────────────────────────────────────────────────────
 function Badge({
@@ -31,7 +33,7 @@ function Badge({
 
 export default function PortfolioPage() {
   const [portfolioData, setPortfolioData] = useState<any>(null);
-  const [tokenHoldings, setTokenHoldings] = useState<any[]>([]);
+  const [tokenHoldings, setTokenHoldings] = useState<Token[]>([]);
   const [timeSeries, setTimeSeries] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -118,7 +120,7 @@ export default function PortfolioPage() {
             </div>
             <div className="flex items-center gap-2.5 mt-2">
               <Badge variant="green">
-                <ArrowUpRight size={11} /> +{formatPercent(portfolioData.portfolioChangePercent)}
+                <ArrowUpRight size={11} /> +{formatPercent(portfolioData.portfolioChangePercent || 0)}
               </Badge>
               <span className="text-xs text-muted-foreground">
                 {tokenHoldings.length} active token positions
@@ -143,7 +145,7 @@ export default function PortfolioPage() {
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b border-border">
-                {['Token', 'Balance', 'Price', 'Value (USD)', '24h Change', 'Allocation', 'Price (30d)', 'Actions'].map((h) => (
+                {['Token', 'Balance', 'Price', 'Value (USD)', '24h Change', 'Allocation', 'Equity %', 'Price (30d)', 'Actions'].map((h) => (
                   <th key={h} className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
                     {h}
                   </th>
@@ -153,6 +155,9 @@ export default function PortfolioPage() {
             <tbody>
               {tokenHoldings.map((token) => {
                 const allocation = totalValue > 0 ? ((token.value / totalValue) * 100).toFixed(1) : '0.0';
+                const userEquityPct = calculateUserEquity(token);
+                console.log("User Equity for token ", token.symbol, " is ", userEquityPct)
+
                 return (
                   <tr key={token.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
                     <td className="px-4 py-3">
@@ -175,7 +180,7 @@ export default function PortfolioPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="text-foreground font-semibold">{formatCurrency(token.price, 2)}</div>
-                      <div className="text-[11px] text-muted-foreground">{(token.priceEth ?? token.price / ethPrice).toFixed(6)} ETH</div>
+                      <div className="text-[11px] text-muted-foreground">{(token.price / ethPrice).toFixed(6)} ETH</div>
                     </td>
                     <td className="px-4 py-3">
                       <div className="text-foreground font-bold text-sm">{formatCurrency(token.value)}</div>
@@ -184,7 +189,7 @@ export default function PortfolioPage() {
                     <td className="px-4 py-3">
                       <Badge variant={token.change24h >= 0 ? 'green' : 'red'}>
                         {token.change24h >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}
-                        {formatPercent(token.change24h)}
+                        {formatPercent(token.change24h || 0)}
                       </Badge>
                     </td>
                     <td className="px-4 py-3">
@@ -194,6 +199,9 @@ export default function PortfolioPage() {
                         </div>
                         <span className="text-xs text-muted-foreground">{allocation}%</span>
                       </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="text-foreground font-bold text-sm">{formatPercent(userEquityPct || 0)}</div>
                     </td>
                     <td className="px-4 py-3">
                       <ResponsiveContainer width={80} height={32}>

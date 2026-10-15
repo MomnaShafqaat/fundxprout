@@ -175,7 +175,7 @@ export async function getUserTokenHoldings() {
       .from("tokens")
       .select(`
         *,
-        campaign:campaigns(id, title, category, price_per_token, contract_address, token_symbol)
+        campaign:campaigns(id, title, category, price_per_token, contract_address, token_symbol, postmoney_valuation_eth)
       `)
       .eq("user_id", user.id);
 
@@ -234,13 +234,16 @@ export async function getUserTokenHoldings() {
           balance: 0,
           price: latestPrice,       // USD per token
           priceEth: pptEth,          // ETH per token
+          pricePerToken: pptEth, //ETH per token
           ethPrice,                  // Live ETH/USD rate
           value: 0,
+          amount: tokenAmount,
           change24h: Number(realChange24h.toFixed(2)),
           color: generateColorForToken(campaignId),
           priceHistory,
           campaignId,
           totalInvested: 0,
+          postmoneyValuation: parseFloat(String(campaign?.postmoney_valuation_eth || "0")),
         });
       }
 

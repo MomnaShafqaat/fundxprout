@@ -1,9 +1,9 @@
 // frontend/app/create-campaign/page.js
 "use client";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useState, useMemo } from "react";
 import { useActionState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { launchBusinessCampaign } from "@/lib/launchCampaign";
+import { launchBusinessCampaign } from "@/lib/owner/launchCampaign";
 import { saveDraftCampaign } from "@/lib/action";
 import CampaignStatusButton from "@/components/campaign-status-button";
 import CampaignDocUpload from "@/components/campaign-doc-upload";
@@ -11,9 +11,11 @@ import { getMyProfile } from "@/utils/supabase/getProfile";
 import { getCampaignById } from "@/utils/supabase/getCampaigns";
 import {
   Upload, Calendar, DollarSign,
-  Loader2, CheckCircle, Coins
+  Loader2, CheckCircle, Coins, Lock, Info
 } from "lucide-react";
 import Image from "next/image";
+import { updateApprovedCampaign } from "@/lib/owner/campaignActions";
+import { convertUsdToEth } from "@/lib/common";
 
 function getInitialFormState(draftCampaign) {
   return {
@@ -25,14 +27,12 @@ function getInitialFormState(draftCampaign) {
       "",
     duration: draftCampaign?.duration ?? "",
     category: draftCampaign?.category ?? "",
-    tokenSymbol:  draftCampaign?.token_symbol ?? draftCampaign?.tokenSymbol ?? "",
+    tokenSymbol: draftCampaign?.token_symbol ?? draftCampaign?.tokenSymbol ?? "",
     pricePerToken: draftCampaign?.price_per_token ?? draftCampaign?.pricePerToken ?? "",
     valuation: draftCampaign?.valuation ?? "",
-
   };
 }
 
-// ── Document upload field config (international standard) ──────────────────
 const CAMPAIGN_DOCS = [
   {
     key: "pitch_deck_cid",
@@ -90,7 +90,6 @@ export function CreateCampaignForm() {
   useEffect(() => {
     async function checkBusinessVerification() {
       const profile = await getMyProfile();
-      // If no business or business is not KYB verified, block them
       if (!profile?.businesses?.[0]?.kyb_verified) {
         alert("You must verify your business with Didit on the Profile page before creating a campaign.");
         router.push("/profile");
@@ -137,7 +136,6 @@ export function CreateCampaignForm() {
     getInitialFormState(draftCampaign),
   );
 
-  // Track CIDs from each doc widget
   const [docCids, setDocCids] = useState({
     pitch_deck_cid: draftCampaign?.pitch_deck_cid ?? "",
     business_plan_cid: draftCampaign?.business_plan_cid ?? "",
@@ -146,12 +144,64 @@ export function CreateCampaignForm() {
     product_demo_cid: draftCampaign?.product_demo_cid ?? "",
   });
 
-  // Campaign cover image (Cloudinary — unchanged from before)
   const [imageUrl, setImageUrl] = useState(draftCampaign?.image_url ?? "");
   const [imageUploading, setImageUploading] = useState(false);
   const [imageUploadError, setImageUploadError] = useState("");
   const [draftSaving, setDraftSaving] = useState(false);
   const [draftMessage, setDraftMessage] = useState("");
+  // ── Compute Real-Time Dilution Math ───────────────────────────────────────
+  const [equityCalculation, setEquityCalculation] = useState({
+    offered: 0,
+    retained: 100,
+    postMoney: 0,
+  });
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function calculateDilution() {
+      const valuationNum = parseFloat(formData.valuation || "0");
+      const goalNum = parseFloat(formData.goal || "0");
+
+      if (valuationNum <= 0 || goalNum <= 0) {
+        if (!isCancelled) {
+          setEquityCalculation({ offered: 0, retained: 100, postMoney: 0 });
+        }
+        return;
+      }
+
+      try {
+        const { ethAmount } = await convertUsdToEth(valuationNum);
+        const postMoney = ethAmount + goalNum;
+
+        if (postMoney <= 0) {
+          if (!isCancelled) {
+            setEquityCalculation({ offered: 0, retained: 100, postMoney: 0 });
+          }
+          return;
+        }
+
+        const offered = (goalNum / postMoney) * 100;
+        const retained = 100 - offered;
+
+        if (!isCancelled) {
+          setEquityCalculation({
+            offered: Number(offered.toFixed(2)),
+            retained: Number(retained.toFixed(2)),
+            postMoney: Number(postMoney.toFixed(3)),
+          });
+        }
+      } catch (err) {
+        console.error("Dilution calculation error:", err);
+      }
+    }
+
+    calculateDilution();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [formData.valuation, formData.goal]);
 
   useEffect(() => {
     setFormData(getInitialFormState(draftCampaign));
@@ -176,6 +226,10 @@ export function CreateCampaignForm() {
       alert(state.error);
     }
   }, [state]);
+
+  // ── Determine if campaign fields are locked due to approval status ───────
+  const campaignStatusLower = draftCampaign?.status?.toLowerCase() ?? "";
+  const isApprovedOrAdjusted = ["approved", "adjusted"].includes(campaignStatusLower);
 
   const handleDocUploaded = (key, cid) =>
     setDocCids((prev) => ({ ...prev, [key]: cid }));
@@ -211,7 +265,6 @@ export function CreateCampaignForm() {
     setDraftMessage("");
 
     try {
-      // Validate required fields
       if (!formData.title.trim()) throw new Error("Campaign title is required");
       if (!formData.description.trim()) throw new Error("Campaign description is required");
       if (!formData.goal || Number(formData.goal) <= 0) {
@@ -223,8 +276,27 @@ export function CreateCampaignForm() {
       if (!formData.tokenSymbol.trim()) throw new Error("Token Symbol is required");
       if (!formData.pricePerToken) throw new Error("Price per token is required");
 
-      // Call server action to save draft
-      const result = await saveDraftCampaign({
+      if(draftCampaign?.id && isApprovedOrAdjusted){
+
+        const result = await updateApprovedCampaign({
+        campaignId: draftCampaign.id,
+        title: formData.title,
+        description: formData.description,
+        goal: formData.goal,
+        duration: formData.duration,
+        category: formData.category,
+        imageUrl: imageUrl,
+        tokenSymbol: formData.tokenSymbol,
+        pricePerToken: formData.pricePerToken,
+      });
+
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      }else {
+
+        const result = await saveDraftCampaign({
         campaignId: draftCampaign?.id,
         title: formData.title,
         description: formData.description,
@@ -240,10 +312,14 @@ export function CreateCampaignForm() {
         tokenSymbol: formData.tokenSymbol,
         pricePerToken: formData.pricePerToken,
         valuation: formData.valuation,
+        // Pass dynamic equity values calculated from new goal
+        equityOffered: equityCalculation.offered,
+        equityRetained: equityCalculation.retained,
       });
 
       if (result.error) {
         throw new Error(result.error);
+      }
       }
 
       router.push("/dashboard");
@@ -255,7 +331,6 @@ export function CreateCampaignForm() {
     }
   };
 
-  // Check all required docs are uploaded before allowing submit
   const requiredDocsMissing = CAMPAIGN_DOCS.filter(
     (d) => d.required && !docCids[d.key]
   );
@@ -286,7 +361,7 @@ export function CreateCampaignForm() {
   ];
 
   const inputClass =
-    "w-full px-4 py-3 bg-[#0d1117] border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#6f42c1] focus:border-transparent transition text-sm";
+    "w-full px-4 py-3 bg-[#0d1117] border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#6f42c1] focus:border-transparent transition text-sm disabled:opacity-60 disabled:cursor-not-allowed";
 
   if (checkingKyb || campaignLoading) {
     return (
@@ -313,9 +388,21 @@ export function CreateCampaignForm() {
           )}
 
           <div>
-            <h1 className="text-3xl font-black text-white mb-1">Create Your Campaign</h1>
-            <p className="text-gray-400 text-sm">
-              All documents are stored on IPFS for transparent, tamper-proof investor access.
+            <div className="flex items-center justify-between">
+              <h1 className="text-3xl font-black text-white mb-1">
+                {isApprovedOrAdjusted ? "Review & Launch Campaign" : "Create Your Campaign"}
+              </h1>
+              {isApprovedOrAdjusted && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  <CheckCircle className="h-3.5 w-3.5" />
+                  Valuation Approved
+                </span>
+              )}
+            </div>
+            <p className="text-gray-400 text-sm mt-1">
+              {isApprovedOrAdjusted
+                ? "Your campaign valuation has been verified. Adjusting your target raise will automatically recalculate investor equity."
+                : "All documents are stored on IPFS for transparent, tamper-proof investor access."}
             </p>
           </div>
 
@@ -323,6 +410,10 @@ export function CreateCampaignForm() {
             {draftCampaign?.id && (
               <input type="hidden" name="campaign_id" value={draftCampaign.id} />
             )}
+
+            {/* Hidden fields to pass updated equity on launch */}
+            <input type="hidden" name="equity_offered" value={equityCalculation.offered} />
+            <input type="hidden" name="equity_retained" value={equityCalculation.retained} />
 
             {/* ── Basic Info ─────────────────────────────────── */}
             <div>
@@ -370,16 +461,62 @@ export function CreateCampaignForm() {
               </div>
             </div>
 
+            {/* ── Real-Time Dilution Preview Banner ──────────── */}
+            {isApprovedOrAdjusted && parseFloat(formData.goal || "0") > 0 && (
+              <div className="bg-[#6f42c1]/10 border border-[#6f42c1]/30 rounded-2xl p-4 space-y-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-[#a78bfa]">
+                  <Info className="h-4 w-4" />
+                  Live Equity Dilution Preview (Based on current target goal)
+                </div>
+                <div className="grid grid-cols-3 gap-2 pt-1 text-center">
+                  <div className="bg-[#0d1117] p-2.5 rounded-xl border border-white/5">
+                    <p className="text-[11px] text-gray-400">Post-Money Valuation</p>
+                    <p className="text-sm font-bold text-white">{equityCalculation.postMoney} ETH</p>
+                  </div>
+                  <div className="bg-[#0d1117] p-2.5 rounded-xl border border-white/5">
+                    <p className="text-[11px] text-gray-400">Equity Offered</p>
+                    <p className="text-sm font-bold text-[#a78bfa]">{equityCalculation.offered}%</p>
+                  </div>
+                  <div className="bg-[#0d1117] p-2.5 rounded-xl border border-white/5">
+                    <p className="text-[11px] text-gray-400">Retained Ownership</p>
+                    <p className="text-sm font-bold text-emerald-400">{equityCalculation.retained}%</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Valuation Section (Restricted if Approved/Adjusted) ── */}
             <div>
-              <label className="block text-xs font-semibold text-gray-300 mb-2 uppercase tracking-wider">
-                Pre-launch Business Valuation (ETH) *
-              </label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-xs font-semibold text-gray-300 uppercase tracking-wider">
+                  {isApprovedOrAdjusted ? "Approved Valuation" : "Pre-launch Business Valuation *"}
+                </label>
+                {isApprovedOrAdjusted && (
+                  <span className="flex items-center gap-1 text-[11px] text-amber-400/90 font-medium">
+                    <Lock className="h-3 w-3" /> Locked by Compliance
+                  </span>
+                )}
+              </div>
               <div className="relative">
                 <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-                <input type="number" name="valuation" value={formData.valuation || ""}
-                  onChange={handleInputChange} className={inputClass + " pl-10"}
-                  placeholder="e.g. 25" step="any" min="0" required />
+                <input
+                  type="number"
+                  name="valuation"
+                  value={formData.valuation || ""}
+                  onChange={handleInputChange}
+                  className={inputClass + " pl-10"}
+                  placeholder="e.g. 25"
+                  step="any"
+                  min="0"
+                  disabled={isApprovedOrAdjusted}
+                  required
+                />
               </div>
+              {isApprovedOrAdjusted && (
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Valuation is verified and locked. Contact compliance if an assessment override is required.
+                </p>
+              )}
             </div>
 
             <div>
@@ -395,7 +532,7 @@ export function CreateCampaignForm() {
               </select>
             </div>
 
-            {/* ── Token Mechanics (New Sections) ────────────────────── */}
+            {/* ── Token Mechanics ────────────────────────────── */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-semibold text-gray-300 mb-2 uppercase tracking-wider">
@@ -421,7 +558,7 @@ export function CreateCampaignForm() {
               </div>
             </div>
 
-            {/* ── Cover Image (Cloudinary) ───────────────────── */}
+            {/* ── Cover Image ─────────────────────────────────── */}
             <div>
               <label className="block text-xs font-semibold text-gray-300 mb-2 uppercase tracking-wider">
                 Campaign Cover Image *
@@ -459,17 +596,18 @@ export function CreateCampaignForm() {
               <input type="hidden" name="image_url" value={imageUrl} />
             </div>
 
-            {/* ── IPFS Documents Section ─────────────────────── */}
+            {/* ── IPFS Documents Section (Restricted if Approved/Adjusted) ── */}
             <div>
               <h2 className="text-base font-bold text-white mb-1">
                 Campaign Documents
               </h2>
               <p className="text-xs text-gray-500 mb-4">
-                All documents are encrypted and stored on IPFS. Investors can verify
-                authenticity via the content hash. Required fields are marked *.
+                {isApprovedOrAdjusted
+                  ? "Audit documents submitted for compliance review are immutable and cannot be altered."
+                  : "All documents are encrypted and stored on IPFS. Required fields are marked *."}
               </p>
 
-              <div className="space-y-5">
+              <div className={`space-y-5 ${isApprovedOrAdjusted ? "pointer-events-none opacity-60" : ""}`}>
                 {CAMPAIGN_DOCS.map((doc) => (
                   <CampaignDocUpload
                     key={doc.key}
@@ -486,7 +624,7 @@ export function CreateCampaignForm() {
             </div>
 
             {/* ── Required docs warning ──────────────────────── */}
-            {requiredDocsMissing.length > 0 && (
+            {requiredDocsMissing.length > 0 && !isApprovedOrAdjusted && (
               <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-xl text-xs text-yellow-400">
                 ⚠️ Still required: {requiredDocsMissing.map((d) => d.label.replace(" *", "")).join(", ")}
               </div>

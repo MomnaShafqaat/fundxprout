@@ -6,6 +6,8 @@ import { ExternalLink, Send, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, Tooltip } from 'recharts';
 import { formatCurrency, formatNumber, formatPercent, truncateAddress } from '@/lib/formatters';
 import { getUserTokenHoldings } from '@/utils/supabase/getPortfolio';
+import { Token } from '@/types';
+import { calculateUserEquity } from '@/lib/equity/tokenEquity';
 
 // ── Badge helper ─────────────────────────────────────────────────────
 function Badge({
@@ -28,7 +30,7 @@ function Badge({
 }
 
 export default function TokensPage() {
-  const [tokenHoldings, setTokenHoldings] = useState<any[]>([]);
+  const [tokenHoldings, setTokenHoldings] = useState<Token[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -98,19 +100,24 @@ export default function TokensPage() {
               </div>
 
               {/* Balance + value */}
-              <div className="grid grid-cols-2 gap-3.5 mb-5">
+              <div className="grid grid-cols-3 gap-3.5 mb-5">
                 <div className="px-[18px] py-4 bg-muted border border-border rounded-xl">
                   <div className="text-[10px] text-muted-foreground uppercase tracking-[0.08em] mb-1.5 font-bold">Balance</div>
                   <div className="text-[22px] font-black text-foreground tracking-tight">{formatNumber(token.balance)}</div>
                   <div className="text-xs text-muted-foreground">{token.symbol} tokens</div>
                 </div>
                 <div className="px-[18px] py-4 bg-muted border border-border rounded-xl">
-                  <div className="text-[10px] text-muted-foreground uppercase tracking-[0.08em] mb-1.5 font-bold">USD Value</div>
-                  <div className="text-[22px] font-black tracking-tight bg-gradient-to-r from-[#6f42c1] to-[#a78bfa] bg-clip-text text-transparent">
-                    {formatCurrency(token.value, 0)}
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-[0.08em] mb-1.5 font-bold">Equity Held</div>
+                  <div className="text-[22px] font-black text-foreground tracking-tight">{calculateUserEquity(token)}%</div>
+                  <div className="text-xs text-muted-foreground">Post Money Valuation: {formatCurrency(token.postmoneyValuation, 2)} ETH</div>
+                </div>
+                <div className="px-[18px] py-4 bg-muted border border-border rounded-xl">
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-[0.08em] mb-1.5 font-bold">Price</div>
+                  <div className="text-[22px] font-black text-foreground tracking-tight">
+                    {formatCurrency(token.pricePerToken, 2)}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    ≈ {(token.value / (token.ethPrice ?? 3000)).toFixed(4)} ETH
+                    ≈ {(token.value / (token.pricePerToken)).toFixed(4)} ETH
                   </div>
                   <div className="text-[11px] text-muted-foreground mt-0.5">
                     @ {formatCurrency(token.price, 2)} ({(token.priceEth ?? 0).toFixed(6)} ETH)/token

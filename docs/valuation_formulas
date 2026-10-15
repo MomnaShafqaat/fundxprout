@@ -1,0 +1,6 @@
+Post money valuation = approved valuation amount by admin (pre money valuation) + target funding goal 
+shareholder retained equity % = approved pre money valuation/post money valuation * 100
+Total equity offered = 100% - shareholder retained equity
+Individual investor equity share = amount pledged / Post money valuation * 100
+Note:
+- convert pre money valuation in dollars to ETH 
