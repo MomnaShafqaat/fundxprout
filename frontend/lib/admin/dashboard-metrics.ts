@@ -19,7 +19,7 @@ export const getAdminMetrics = unstable_cache(
       supabase.from("campaigns").select("id", { count: "exact", head: true }).eq("goal_reached", true),
       supabase.from("escrow_accounts").select("balance"),
       supabase.from("marketplace_daily_volume").select("trade_date, volume_usd, trade_count").order("trade_date", { ascending: true }).limit(30),
-      supabase.from("campaigns").select("id, title, owner, funding_goal, valuation, created_at, status").eq("status", "in_review").order("created_at", { ascending: false }).limit(5),
+      supabase.from("campaigns").select("id, title, owner, funding_goal, valuation, created_at, status").eq("status", "in_review").order("created_at", { ascending: false }),
     ]);
 
     // On-chain RPC balances

@@ -91,8 +91,9 @@ const CAMPAIGN_DOCS = [
 export { default as DocUpload } from "@/components/campaign-doc-upload";
 
 function getDeadlineTimestamp(deadline) {
-  const timestamp = deadline ? Math.floor(new Date(deadline).getTime() / 1000) : NaN;
-  return Number.isSafeInteger(timestamp) ? timestamp : "";
+  if (!deadline) return "";
+  const timestamp = Math.floor(new Date(deadline).getTime() / 1000);
+  return Number.isSafeInteger(timestamp) && timestamp > 0 ? timestamp : "";
 }
 
 export function CreateCampaignForm() {
@@ -444,7 +445,7 @@ export function CreateCampaignForm() {
             <input
               type="hidden"
               name="deadline_timestamp"
-              value={getDeadlineTimestamp(new Date(draftCampaign.deadline).toISOString().slice(0, 16))}
+              value={getDeadlineTimestamp(formData.deadline)}
             />
 
             {/* ── Basic Info ─────────────────────────────────── */}

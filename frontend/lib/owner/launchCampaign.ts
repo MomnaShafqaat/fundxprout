@@ -96,6 +96,7 @@ export async function handleLaunchSubmit(prevState: any, formData: FormData) {
     });
 
     alert("Campaign launched successfully!");
+    return { success: true };
   } catch (err: any) {
     console.error(err);
     alert(err.message || "Transaction rejected or failed");
