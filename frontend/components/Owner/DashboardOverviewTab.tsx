@@ -262,7 +262,7 @@ export default function DashboardOverviewTab({
                 </div>
 
                 <div className="flex items-center gap-3">
-                  {campaign.status === "ended" && isGoalReached && campaign.contract_address && (
+                  {isGoalReached && campaign.contract_address && (
                     <button
                       onClick={() => handleWithdrawFunds(campaign.contract_address)}
                       disabled={txPending === campaign.contract_address}

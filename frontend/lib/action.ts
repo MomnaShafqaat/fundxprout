@@ -1014,7 +1014,53 @@ export async function verifyCampaignForLaunch(campaignId: string) {
   return { success: true, campaign };
 }
 
-// Call this after MetaMask transaction succeeds
-export async function finalizeCampaignLaunch(campaignData: any) {
-  return await saveCampaignToDb(campaignData);
+export async function finalizeCampaignLaunch(formData: any) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "Unauthorized" };
+
+  // Always updated on launch
+  const updateData: Record<string, any> = {
+    contract_address: formData.contractAddress,
+    token_contract_address: formData.tokenContractAddress,
+    transaction_hash: formData.txHash,
+    status: "launched",
+  };
+
+  // Only update metadata fields IF provided (prevents overwriting with null)
+  if (formData.title) updateData.title = formData.title;
+  if (formData.description) updateData.description = formData.description;
+  if (formData.category) updateData.category = formData.category;
+  if (formData.goal) updateData.funding_goal = formData.goal;
+  if (formData.tokenSymbol) updateData.token_symbol = formData.tokenSymbol;
+  if (formData.pricePerToken) updateData.price_per_token = formData.pricePerToken;
+  if (formData.imageUrl) updateData.image_url = formData.imageUrl;
+  if (formData.deadline) updateData.deadline = formData.deadline;
+  if (formData.duration) updateData.duration = formData.duration;
+  
+  // Document CIDs (if they re-uploaded anything)
+  if (formData.pitchDeckCid) {
+    updateData.pitch_deck_cid = formData.pitchDeckCid;
+    updateData.pitch_deck_url = cidToUrl(formData.pitchDeckCid);
+  }
+  if (formData.businessPlanCid) {
+    updateData.business_plan_cid = formData.businessPlanCid;
+    updateData.business_plan_url = cidToUrl(formData.businessPlanCid);
+  }
+
+  const { data, error } = await supabase
+    .from("campaigns")
+    .update(updateData)
+    .eq("id", formData.campaignId)
+    .eq("owner", user.id)
+    .in("status", ["approved", "adjusted"])
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[finalizeCampaignLaunch] Supabase error:", error.message);
+    return { error: error.message };
+  }
+
+  return { success: true, campaignId: data?.id };
 }
