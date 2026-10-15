@@ -15,18 +15,19 @@ class ValidationError extends Error {
 async function validateTradeable(campaignId) {
   const { data: campaign, error: campErr } = await supabaseAdmin
     .from('campaigns')
-    .select('id, status, goal_reached, is_expired, secondary_trading_enabled, flag_count, last_traded_price, price_per_token')
+    .select('id, status, amount_pledged, funding_goal , goal_reached, is_expired, secondary_trading_enabled, flag_count, last_traded_price, price_per_token')
     .eq('id', campaignId)
     .single();
 
   if (campErr || !campaign) throw new ValidationError('CAMPAIGN_NOT_FOUND', 'Campaign not found');
 
-  if (!campaign.goal_reached || !campaign.is_expired) {
+  if (campaign.amount_pledged < campaign.funding_goal ) {
     throw new ValidationError('CAMPAIGN_NOT_CLOSED', 'Campaign must be closed and funded before secondary trading');
   }
-  if (!campaign.secondary_trading_enabled) {
-    throw new ValidationError('TRADING_DISABLED', 'Secondary trading is not enabled for this campaign');
-  }
+  // successful campaign are tradeable on secondary marketplace automatically
+  // if (!campaign.secondary_trading_enabled) {
+  //   throw new ValidationError('TRADING_DISABLED', 'Secondary trading is not enabled for this campaign');
+  // }
 
   const { data: settings } = await supabaseAdmin
     .from('campaign_secondary_market_settings')
@@ -47,7 +48,7 @@ async function validateInvestor(investorId) {
 
   if (profErr || !profile) throw new ValidationError('PROFILE_NOT_FOUND', 'Investor profile not found');
   if (!profile.identity_verified) throw new ValidationError('NOT_VERIFIED', 'Identity verification required');
-  if (!profile.profile_complete) throw new ValidationError('PROFILE_INCOMPLETE', 'Profile must be complete to trade');
+  //if (!profile.profile_complete) throw new ValidationError('PROFILE_INCOMPLETE', 'Profile must be complete to trade');
   if (profile.trading_restricted) throw new ValidationError('TRADING_RESTRICTED', 'This account is restricted from trading');
 
   // Rule 4: no active pending/rejected verification session

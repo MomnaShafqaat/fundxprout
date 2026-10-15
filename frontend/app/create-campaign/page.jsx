@@ -26,14 +26,28 @@ function getInitialFormState(draftCampaign) {
       draftCampaign?.funding_goal ??
       "",
     duration: draftCampaign?.duration ?? "",
-    deadline: draftCampaign?.deadline
-      ? new Date(draftCampaign.deadline).toISOString().slice(0, 16)
-      : "",
+    deadline: draftCampaign?.deadline ?? "",
     category: draftCampaign?.category ?? "",
     tokenSymbol: draftCampaign?.token_symbol ?? draftCampaign?.tokenSymbol ?? "",
     pricePerToken: draftCampaign?.price_per_token ?? draftCampaign?.pricePerToken ?? "",
     valuation: draftCampaign?.valuation ?? "",
   };
+}
+
+export function formatUTCtoLocalInput(utcDateString) {
+  if (!utcDateString) return "";
+  const date = new Date(utcDateString);
+  if (isNaN(date.getTime())) return "";
+
+  const pad = (n) => String(n).padStart(2, "0");
+
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());     // Uses local browser time
+  const minutes = pad(date.getMinutes()); // Uses local browser time
+
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
 const CAMPAIGN_DOCS = [
@@ -77,8 +91,9 @@ const CAMPAIGN_DOCS = [
 export { default as DocUpload } from "@/components/campaign-doc-upload";
 
 function getDeadlineTimestamp(deadline) {
-  const timestamp = deadline ? Math.floor(new Date(deadline).getTime() / 1000) : NaN;
-  return Number.isSafeInteger(timestamp) ? timestamp : "";
+  if (!deadline) return "";
+  const timestamp = Math.floor(new Date(deadline).getTime() / 1000);
+  return Number.isSafeInteger(timestamp) && timestamp > 0 ? timestamp : "";
 }
 
 export function CreateCampaignForm() {
@@ -472,7 +487,7 @@ export function CreateCampaignForm() {
                 </label>
                 <div className="relative">
                   <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-                  <input type="datetime-local" name="deadline" value={formData.deadline}
+                  <input type="datetime-local" name="deadline" value={formatUTCtoLocalInput(formData.deadline)}
                     onChange={handleInputChange} className={inputClass + " pl-10"}
                     min={new Date(Date.now() + 60 * 1000).toISOString().slice(0, 16)} required />
                 </div>
