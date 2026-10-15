@@ -38,6 +38,11 @@ const server = http.createServer(app);
 // Initialize sockets after server creation
 initMarketplaceSocket(server);
 
+// Initialize Supabase realtime listeners for fair price auto-recalculation.
+// Fires whenever a token_trade is settled or a new bid is placed via direct DB writes.
+const { initRealtimeListeners } = require('./services/fairPriceService');
+initRealtimeListeners();
+
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });

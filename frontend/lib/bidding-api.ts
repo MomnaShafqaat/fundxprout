@@ -10,9 +10,10 @@ import { createClient } from '@/utils/supabase/client';
 
 export type BidStatus =
   | 'pending'
-  | 'counter_offered'   // shafqaat implemented — seller sent a counter-price
-  | 'counter_accepted'  // buyer agreed to counter → proceeds to confirm+complete
-  | 'counter_rejected'  // buyer turned down counter → bid ends
+  | 'auto_accepted'    // system auto-selected this bid when listing_deadline passed
+  | 'counter_offered'  // shafqaat implemented — seller sent a counter-price
+  | 'counter_accepted' // buyer agreed to counter → proceeds to confirm+complete
+  | 'counter_rejected' // buyer turned down counter → bid ends
   | 'accepted'
   | 'confirmed'
   | 'completed'
@@ -48,6 +49,10 @@ export type TokenBid = {
     seller_nonce: number | null;
     // shafqaat implemented — Fix P3: auto-accept threshold price on sell listings
     auto_accept_price_per_token?: number | null;
+    // Auction mode fields
+    listing_mode?: 'manual' | 'auto';
+    listing_deadline?: string | null;          // ISO timestamp for auction end
+    min_bid_price_per_token?: number | null;   // Floor price — bids below this are rejected
     campaigns?: {
       title: string | null;
       category: string | null;
@@ -192,6 +197,22 @@ export async function acceptBid(bidId: string): Promise<{
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || 'Failed to accept bid');
+  }
+  return res.json();
+}
+
+/** Seller: reject a specific bid (works for pending and counter_offered status) */
+export async function rejectBid(bidId: string): Promise<{
+  bid: TokenBid;
+  message: string;
+}> {
+  const res = await fetch(`${API_BASE}/api/marketplace/bids/${bidId}/reject`, {
+    method: 'POST',
+    headers: await authHeaders(),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to reject bid');
   }
   return res.json();
 }

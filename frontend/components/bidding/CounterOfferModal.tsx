@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { X, Handshake, AlertCircle, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { counterBid, type TokenBid } from '@/lib/bidding-api';
+import FairPriceIndicator from '@/components/bidding/FairPriceIndicator';
 
 // shafqaat implemented — Fix P3: Modal for seller to send a counter-offer to a buyer
 interface CounterOfferModalProps {
@@ -97,6 +98,13 @@ export default function CounterOfferModal({
               <span className="font-semibold text-foreground">{(originalPrice * quantity).toFixed(6)} ETH</span>
             </div>
           </div>
+
+          {/* AI Fair Price — gives seller market context before setting counter */}
+          <FairPriceIndicator
+            campaignId={bid.campaign_id}
+            listingPrice={originalPrice}
+            onApplyFairPrice={(price) => setCounterPrice(String(price))}
+          />
 
           <div>
             <label className="block text-xs font-semibold text-foreground mb-1">

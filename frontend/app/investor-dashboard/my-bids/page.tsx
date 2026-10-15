@@ -25,6 +25,7 @@ import ModifyBidModal from '@/components/bidding/ModifyBidModal';
 function StatusBadge({ status }: { status: TokenBid['status'] }) {
   const map: Record<string, { label: string; color: string; bg: string }> = {
     pending:          { label: 'Pending',           color: 'var(--chart-5)', bg: 'color-mix(in srgb, var(--chart-5) 12%, transparent)' },
+    auto_accepted:    { label: '🏆 Auction Won!',    color: '#f59e0b',        bg: 'rgba(245,158,11,0.12)' },
     counter_offered:  { label: 'Counter-Offer!',    color: 'var(--chart-4)', bg: 'color-mix(in srgb, var(--chart-4) 15%, transparent)' },
     counter_accepted: { label: 'Counter Accepted',  color: 'var(--chart-3)', bg: 'color-mix(in srgb, var(--chart-3) 12%, transparent)' },
     counter_rejected: { label: 'Counter Declined',  color: 'var(--muted-foreground)', bg: 'color-mix(in srgb, var(--muted-foreground) 10%, transparent)' },
@@ -324,7 +325,7 @@ export default function MyBidsPage() {
   // Helper to check if deadline/expiry has passed
   const isBidExpired = (b: any) => {
     if (b.status === 'expired') return true;
-    if (['accepted', 'confirmed', 'counter_accepted'].includes(b.status) && b.accept_deadline) {
+    if (['accepted', 'confirmed', 'counter_accepted', 'auto_accepted'].includes(b.status) && b.accept_deadline) {
       return new Date(b.accept_deadline).getTime() < Date.now();
     }
     if (b.status === 'counter_offered' && b.counter_expires_at) {
@@ -337,9 +338,9 @@ export default function MyBidsPage() {
   };
 
   // ── Render ───────────────────────────────────────────────────
-  // shafqaat implemented — active bids include counter states
+  // shafqaat implemented — active bids include counter states and auto_accepted
   const activeBids = bids.filter(
-    (b) => ['pending', 'accepted', 'confirmed', 'counter_offered', 'counter_accepted'].includes(b.status) && !isBidExpired(b)
+    (b) => ['pending', 'auto_accepted', 'accepted', 'confirmed', 'counter_offered', 'counter_accepted'].includes(b.status) && !isBidExpired(b)
   );
   const historicBids = bids.filter(
     (b) => ['completed', 'rejected', 'cancelled', 'expired', 'counter_rejected'].includes(b.status) || isBidExpired(b)
@@ -389,7 +390,8 @@ export default function MyBidsPage() {
               <div className="flex flex-col gap-3">
                 {activeBids.map((bid) => {
                   const campaign = bid.token_orders?.campaigns;
-                  const isAccepted = ['accepted', 'confirmed', 'counter_accepted'].includes(bid.status);
+                  const isAccepted = ['accepted', 'confirmed', 'counter_accepted', 'auto_accepted'].includes(bid.status);
+                  const isAutoWon = bid.status === 'auto_accepted';
                   const isCounterOffered = bid.status === 'counter_offered';
                   const isProcessing = processingId === bid.id;
                   const step = progressMsg[bid.id];
@@ -409,8 +411,22 @@ export default function MyBidsPage() {
                         boxShadow: '0 0 24px color-mix(in srgb, var(--chart-4) 12%, transparent)',
                       } : {}}
                     >
-                      {/* Accepted banner with live countdown timer */}
-                      {isAccepted && (
+                      {/* Auction Won banner — shown for auto_accepted bids */}
+                      {isAutoWon && (
+                        <div
+                          className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl px-4 py-3 text-sm font-semibold"
+                          style={{ background: 'rgba(245,158,11,0.12)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span>🏆</span>
+                            <span>You won the auction! Confirm &amp; Pay within 24 hours to receive your tokens.</span>
+                          </div>
+                          <CountdownTimer deadline={bid.accept_deadline} label="Pay Before" />
+                        </div>
+                      )}
+
+                      {/* Accepted banner with live countdown timer (manual accept) */}
+                      {isAccepted && !isAutoWon && (
                         <div
                           className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl px-4 py-3 text-sm font-semibold"
                           style={{ background: 'color-mix(in srgb, var(--chart-3) 12%, transparent)', color: 'var(--chart-3)' }}
@@ -451,7 +467,7 @@ export default function MyBidsPage() {
 
                           {bid.counter_message && (
                             <p className="text-xs text-muted-foreground italic bg-muted/30 p-2.5 rounded-lg border border-border/30">
-                              "{bid.counter_message}"
+                              &ldquo;{bid.counter_message}&rdquo;
                             </p>
                           )}
 
@@ -494,7 +510,9 @@ export default function MyBidsPage() {
                       {/* Expiry info */}
                       <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
                         <Clock size={12} />
-                        {isAccepted ? (
+                        {isAutoWon ? (
+                          <span>Pay deadline: {timeLeft(bid.accept_deadline)}</span>
+                        ) : isAccepted ? (
                           <span>Accept deadline: {timeLeft(bid.accept_deadline)}</span>
                         ) : isCounterOffered ? (
                           <span>Response deadline: {timeLeft(bid.counter_expires_at)}</span>

@@ -60,10 +60,19 @@ function emitTradeExecuted(campaignId, trade) {
   io.of('/marketplace').to(String(campaignId)).emit('tradeExecuted', { campaignId: String(campaignId), trade: formatted });
 }
 
-// New: push a single notification object to a specific user's private room
+// Push a single notification object to a specific user's private room
 function emitNotificationToUser(userId, notification) {
   if (!io) return;
   io.of('/notifications').to(`user:${userId}`).emit('newNotification', notification);
 }
 
-module.exports = { initMarketplaceSocket, emitBookUpdate, emitTradeExecuted, emitNotificationToUser };
+// Push live fair-price update to all clients watching a campaign room.
+// Called by fairPriceService after each AI recalculation.
+function emitFairPriceUpdate(campaignId, fairPriceData) {
+  if (!io) return;
+  io.of('/marketplace')
+    .to(String(campaignId))
+    .emit('fairPriceUpdated', { campaignId: String(campaignId), ...fairPriceData });
+}
+
+module.exports = { initMarketplaceSocket, emitBookUpdate, emitTradeExecuted, emitNotificationToUser, emitFairPriceUpdate };
