@@ -105,9 +105,11 @@ function timeLeft(isoDate: string | null) {
   return `${h}h ${m}m`;
 }
 
-// ABI for the existing fillOrder() function
+// ABI for the deployed EquitySecondaryMarketplace functions
 const MARKETPLACE_ABI = [
-  'function fillOrder(address seller, address tokenAddress, uint256 tokenAmount, uint256 pricePerToken, uint256 nonce, uint256 expiry, bytes calldata sellerOrderSignature, uint256 kycDeadline, bytes calldata kycSignature) payable',
+  'function settleAuctionTrade(bytes32 tradeId, address token, address seller, uint256 amount, uint256 pricePerToken, uint256 auctionDeadline) payable',
+  'function settleTrade(bytes32 tradeId, address token, address seller, uint256 amount, uint256 pricePerToken) payable',
+  'function settleNegotiatedTrade(bytes32 tradeId, address token, address seller, uint256 amount, uint256 originalListedPrice, uint256 finalNegotiatedPrice) payable',
 ];
 
 // ── Main component ───────────────────────────────────────────────
@@ -225,66 +227,65 @@ export default function MyBidsPage() {
     const toastId = toast.loading('Preparing settlement…');
     try {
       // 1. Get settlement data from backend (marks bid as 'confirmed')
-      setStep(bid.id, 'Getting KYC authorization…');
-      toast.loading('Getting KYC authorization from server…', { id: toastId });
+      setStep(bid.id, 'Preparing settlement details…');
+      toast.loading('Preparing on-chain settlement…', { id: toastId });
       const { settlement_data } = await confirmBid(bid.id);
 
       const {
         seller_wallet,
-        seller_signature,
-        seller_nonce,
         token_contract_address,
         quantity,
         price_per_token,
       } = settlement_data;
 
-      if (!seller_signature) throw new Error('Seller has not signed this listing yet. Contact the seller.');
+      if (!seller_wallet) throw new Error('Seller wallet address is missing from this listing.');
       if (!token_contract_address) throw new Error('Token contract address is missing from this listing.');
 
-      // 2. Expiry guard: seller signed with a 7-day window from listing creation
-      //    We use listing_created_at if available; otherwise recompute safely.
-      const expiry = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60;
       const tokenAmount = ethers.parseUnits(String(quantity), 18);
       const pricePerToken = ethers.parseEther(String(price_per_token));
       const totalEth = (tokenAmount * pricePerToken) / ethers.WeiPerEther;
+      const tradeId = ethers.id(bid.id);
 
-      // 3. Get KYC authorization signature from backend
-      toast.loading('Verifying KYC credentials…', { id: toastId });
-      const kycRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'}/api/marketplace/kyc-signature`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${(await (await import('@/utils/supabase/client')).createClient().auth.getSession()).data.session?.access_token}`,
-        },
-        body: JSON.stringify({
-          buyer_wallet: walletAddress,
-          seller_wallet,
-          chain_id: 11155111,
-        }),
-      });
-      if (!kycRes.ok) {
-        const kycErr = await kycRes.json().catch(() => ({}));
-        throw new Error(kycErr.error || 'KYC authorization failed — ensure both you and the seller are KYC-verified.');
-      }
-      const { kycSignature, kycDeadline } = await kycRes.json();
-
-      toast.loading('Please confirm in MetaMask…', { id: toastId });
+      toast.loading('Please confirm transaction in MetaMask…', { id: toastId });
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       const marketplace = new ethers.Contract(marketplaceAddress, MARKETPLACE_ABI, signer);
 
-      const tx = await marketplace.fillOrder(
-        seller_wallet,
-        token_contract_address,
-        tokenAmount,
-        pricePerToken,
-        seller_nonce,
-        expiry,
-        seller_signature,
-        kycDeadline,
-        kycSignature,
-        { value: totalEth },
-      );
+      let tx;
+      if (bid.status === 'auto_accepted' || bid.token_orders?.listing_mode === 'auto') {
+        const deadline = bid.token_orders?.listing_deadline
+          ? Math.floor(new Date(bid.token_orders.listing_deadline).getTime() / 1000)
+          : 0;
+        tx = await marketplace.settleAuctionTrade(
+          tradeId,
+          token_contract_address,
+          seller_wallet,
+          tokenAmount,
+          pricePerToken,
+          deadline,
+          { value: totalEth }
+        );
+      } else if (bid.status === 'counter_accepted' && bid.counter_price_per_token && bid.original_bid_price) {
+        const originalListedPrice = ethers.parseEther(String(bid.original_bid_price || bid.token_orders?.price || price_per_token));
+        tx = await marketplace.settleNegotiatedTrade(
+          tradeId,
+          token_contract_address,
+          seller_wallet,
+          tokenAmount,
+          originalListedPrice,
+          pricePerToken,
+          { value: totalEth }
+        );
+      } else {
+        tx = await marketplace.settleTrade(
+          tradeId,
+          token_contract_address,
+          seller_wallet,
+          tokenAmount,
+          pricePerToken,
+          { value: totalEth }
+        );
+      }
 
       toast.loading('Waiting for on-chain confirmation…', { id: toastId });
       const receipt = await tx.wait();

@@ -2,7 +2,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ExternalLink, Send, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { ExternalLink, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, Tooltip } from 'recharts';
 import { formatCurrency, formatNumber, formatPercent, truncateAddress } from '@/lib/formatters';
 import { getUserTokenHoldings } from '@/utils/supabase/getPortfolio';
@@ -155,18 +155,23 @@ export default function TokensPage() {
 
               {/* Actions */}
               <div className="flex gap-2.5">
-                <button className="flex-1 justify-center bg-[#6f42c1] hover:bg-[#5a3599] text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition-all inline-flex items-center gap-2">
-                  <Send size={14} /> Transfer
-                </button>
                 <Link
                   href={`/investor-dashboard/marketplace/${token.campaignId}?side=sell`}
-                  className="flex-1 justify-center bg-[#6f42c1] hover:bg-[#5a3599] text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition-all inline-flex items-center gap-2"
+                  className="flex-1 justify-center bg-[#6f42c1] hover:bg-[#5a3599] text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition-all inline-flex items-center gap-2 shadow-sm"
                 >
                   <ArrowUpRight size={14} /> Sell
                 </Link>
-                <button className="text-muted-foreground hover:text-foreground px-3 py-2.5 rounded-xl border border-border hover:bg-muted transition-all">
-                  <ExternalLink size={14} />
-                </button>
+                {token.contractAddress && (
+                  <a
+                    href={`https://sepolia.etherscan.io/token/${token.contractAddress}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-muted-foreground hover:text-foreground px-3 py-2.5 rounded-xl border border-border hover:bg-muted transition-all inline-flex items-center justify-center"
+                    title="View on Etherscan"
+                  >
+                    <ExternalLink size={14} />
+                  </a>
+                )}
               </div>
             </div>
           ))}

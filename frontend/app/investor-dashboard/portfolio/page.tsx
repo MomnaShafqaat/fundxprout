@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { ArrowUpRight, ArrowDownRight, ExternalLink } from 'lucide-react';
 import {
   LineChart, Line, ResponsiveContainer, Tooltip,
@@ -217,13 +218,24 @@ export default function PortfolioPage() {
                       </ResponsiveContainer>
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex gap-1.5">
-                        <button className="bg-[#6f42c1] text-white text-[11px] font-semibold px-3 py-1.5 rounded-lg hover:bg-[#5a3599] transition-all">
-                          Transfer
-                        </button>
-                        <button className="text-muted-foreground hover:text-foreground bg-transparent px-2 py-1.5 rounded-lg transition-all">
-                          <ExternalLink size={13} />
-                        </button>
+                      <div className="flex gap-1.5 items-center">
+                        <Link
+                          href={`/investor-dashboard/marketplace/${token.campaignId}?side=sell`}
+                          className="bg-[#6f42c1] text-white text-[11px] font-semibold px-3 py-1.5 rounded-lg hover:bg-[#5a3599] transition-all inline-flex items-center gap-1"
+                        >
+                          <ArrowUpRight size={12} /> Sell
+                        </Link>
+                        {token.contractAddress && (
+                          <a
+                            href={`https://sepolia.etherscan.io/token/${token.contractAddress}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-muted-foreground hover:text-foreground bg-transparent px-2 py-1.5 rounded-lg transition-all"
+                            title="View on Etherscan"
+                          >
+                            <ExternalLink size={13} />
+                          </a>
+                        )}
                       </div>
                     </td>
                   </tr>

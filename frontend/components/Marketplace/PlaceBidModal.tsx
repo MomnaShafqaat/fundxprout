@@ -37,10 +37,18 @@ export default function PlaceBidModal({ order, onClose, onBidPlaced }: Props) {
     e.preventDefault();
     setError(null);
 
-    if (!walletAddress) {
-      await connectWallet();
-      setError('Wallet connected. Please submit your bid again.');
-      return;
+    let activeWallet = walletAddress;
+    if (!activeWallet) {
+      try {
+        activeWallet = await connectWallet();
+      } catch (err: any) {
+        setError('Could not connect to MetaMask. Please check if you have pending requests in MetaMask.');
+        return;
+      }
+      if (!activeWallet) {
+        setError('Please connect your MetaMask wallet before placing a bid.');
+        return;
+      }
     }
 
     if (!bidPrice || bidPriceNum <= 0) {
@@ -62,7 +70,7 @@ export default function PlaceBidModal({ order, onClose, onBidPlaced }: Props) {
         listing_id: order.id,
         bid_price_per_token: bidPriceNum,
         quantity: quantityNum,
-        buyer_wallet: walletAddress,
+        buyer_wallet: activeWallet,
         bid_expires_days: Number(expiryDays) || 7,
       });
       setSuccess(true);

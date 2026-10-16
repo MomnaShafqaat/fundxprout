@@ -285,7 +285,7 @@ async function placeBid(req, res) {
     return res.status(201).json({ bid, message: 'Bid placed successfully. The seller will be notified.' });
   } catch (err) {
     console.error('[placeBid] error:', err);
-    return res.status(500).json({ error: 'Failed to place bid' });
+    return res.status(500).json({ error: err?.message || 'Failed to place bid' });
   }
 }
 
