@@ -6,13 +6,35 @@ const { createNotification } = require('../services/notificationService');
 
 async function createOrder(req, res) {
   const investorId = req.investorId || req.user?.id;
-  const { campaign_id, side, price, quantity, wallet_address, auto_accept_price_per_token } = req.body;
+  const {
+    campaign_id,
+    side,
+    price,
+    quantity,
+    wallet_address,
+    auto_accept_price_per_token,
+    listing_mode,
+    listing_deadline,
+    min_bid_price_per_token,
+  } = req.body;
 
   if (!campaign_id || !side || !price || !quantity) {
     return res.status(400).json({ error: 'campaign_id, side, price, and quantity are required' });
   }
   if (!['buy', 'sell'].includes(side)) {
     return res.status(400).json({ error: "side must be 'buy' or 'sell'" });
+  }
+
+  // Automated auction deadline validation
+  const isAutoMode = side === 'sell' && listing_mode === 'auto';
+  if (isAutoMode) {
+    if (!listing_deadline) {
+      return res.status(400).json({ error: 'listing_deadline is required for automated auction mode' });
+    }
+    const deadlineDate = new Date(listing_deadline);
+    if (isNaN(deadlineDate.getTime()) || deadlineDate <= new Date()) {
+      return res.status(400).json({ error: 'listing_deadline must be a valid future date and time' });
+    }
   }
 
   try {
@@ -58,6 +80,11 @@ async function createOrder(req, res) {
         seller_wallet_address: wallet_address,
         // shafqaat implemented — Fix P3: Store optional auto-accept threshold price for sell listing
         auto_accept_price_per_token: auto_accept_price_per_token ? Number(auto_accept_price_per_token) : null,
+        // Automated auction flow fields
+        listing_mode: isAutoMode ? 'auto' : 'manual',
+        listing_deadline: isAutoMode ? new Date(listing_deadline).toISOString() : null,
+        deadline_processed: false,
+        min_bid_price_per_token: (side === 'sell' && min_bid_price_per_token) ? Number(min_bid_price_per_token) : null,
       }])
       .select()
       .single();
@@ -172,7 +199,7 @@ async function getOpenSellOrders(req, res) {
   try {
     const { data: orders, error: orderError } = await supabaseAdmin
       .from('token_orders')
-      .select('id, campaign_id, investor_id, price, quantity, quantity_remaining, created_at, seller_wallet_address')
+      .select('id, campaign_id, investor_id, price, quantity, quantity_remaining, created_at, seller_wallet_address, listing_mode, listing_deadline, min_bid_price_per_token, auto_accept_price_per_token')
       .eq('side', 'sell')
       .in('status', ['open', 'partially_filled'])
       .gt('quantity_remaining', 0)

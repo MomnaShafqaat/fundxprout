@@ -55,6 +55,20 @@ contract EquitySecondaryMarketplace is ReentrancyGuard, Ownable, Pausable {
         uint256 tokenAmount
     );
 
+    // Emitted when an auction deadline fires and the auto-selected buyer settles on-chain.
+    // Records auctionDeadline so block explorers and auditors can trace exactly which
+    // pg_cron run triggered this settlement — distinct from manual OTC deals.
+    event AuctionTradeSettled(
+        bytes32 indexed tradeId,
+        address indexed token,
+        address indexed buyer,
+        address seller,
+        uint256 tokenAmount,
+        uint256 totalPrice,
+        uint256 platformFee,
+        uint256 auctionDeadline
+    );
+
     event FeeTreasuryUpdated(address indexed treasury);
     event PlatformFeeUpdated(uint256 feeBps);
 
@@ -188,6 +202,39 @@ contract EquitySecondaryMarketplace is ReentrancyGuard, Ownable, Pausable {
 
         // shafqaat work: emit both prices for the negotiation audit trail on-chain
         emit NegotiatedTradeSettled(tradeId, msg.sender, seller, originalListedPrice, finalNegotiatedPrice, amount);
+        emit TradeSettled(tradeId, token, msg.sender, seller, amount, totalPrice, fee);
+    }
+
+    // ─── NEW FUNCTION 4: Settle an Auction-Auto-Selected Trade ────────────────
+
+    // Called by the auto_accepted buyer after the listing deadline fires.
+    // Unlike settleOtcTrade(), no prior registerOtcDeal() is needed because
+    // the seller's ERC20 approval (given at listing creation) covers this trade.
+    // Records auctionDeadline on-chain for a full audit trail of the automation.
+    function settleAuctionTrade(
+        bytes32 tradeId,
+        address token,
+        address seller,
+        uint256 amount,
+        uint256 pricePerToken,
+        uint256 auctionDeadline  // Unix timestamp of the listing deadline that triggered auto-select
+    ) external payable nonReentrant whenNotPaused {
+        require(token != address(0) && seller != address(0), "Invalid address");
+        require(amount > 0 && pricePerToken > 0, "Invalid trade");
+        require(!settledTrades[tradeId], "Trade already settled");
+
+        uint256 totalPrice = (amount * pricePerToken) / 1e18;
+        require(totalPrice > 0 && msg.value == totalPrice, "Incorrect ETH value");
+
+        uint256 fee = (totalPrice * platformFeeBps) / 10_000;
+        settledTrades[tradeId] = true;
+
+        // Seller must have approved the marketplace contract as a spender when creating the listing
+        IERC20(token).safeTransferFrom(seller, msg.sender, amount);
+        _sendEth(feeTreasury, fee);
+        _sendEth(seller, totalPrice - fee);
+
+        emit AuctionTradeSettled(tradeId, token, msg.sender, seller, amount, totalPrice, fee, auctionDeadline);
         emit TradeSettled(tradeId, token, msg.sender, seller, amount, totalPrice, fee);
     }
 

@@ -25,6 +25,7 @@ import ModifyBidModal from '@/components/bidding/ModifyBidModal';
 function StatusBadge({ status }: { status: TokenBid['status'] }) {
   const map: Record<string, { label: string; color: string; bg: string }> = {
     pending:          { label: 'Pending',           color: 'var(--chart-5)', bg: 'color-mix(in srgb, var(--chart-5) 12%, transparent)' },
+    auto_accepted:    { label: '🏆 Auction Won!',    color: '#f59e0b',        bg: 'rgba(245,158,11,0.12)' },
     counter_offered:  { label: 'Counter-Offer!',    color: 'var(--chart-4)', bg: 'color-mix(in srgb, var(--chart-4) 15%, transparent)' },
     counter_accepted: { label: 'Counter Accepted',  color: 'var(--chart-3)', bg: 'color-mix(in srgb, var(--chart-3) 12%, transparent)' },
     counter_rejected: { label: 'Counter Declined',  color: 'var(--muted-foreground)', bg: 'color-mix(in srgb, var(--muted-foreground) 10%, transparent)' },
@@ -104,9 +105,11 @@ function timeLeft(isoDate: string | null) {
   return `${h}h ${m}m`;
 }
 
-// ABI for the existing fillOrder() function
+// ABI for the deployed EquitySecondaryMarketplace functions
 const MARKETPLACE_ABI = [
-  'function fillOrder(address seller, address tokenAddress, uint256 tokenAmount, uint256 pricePerToken, uint256 nonce, uint256 expiry, bytes calldata sellerOrderSignature, uint256 kycDeadline, bytes calldata kycSignature) payable',
+  'function settleAuctionTrade(bytes32 tradeId, address token, address seller, uint256 amount, uint256 pricePerToken, uint256 auctionDeadline) payable',
+  'function settleTrade(bytes32 tradeId, address token, address seller, uint256 amount, uint256 pricePerToken) payable',
+  'function settleNegotiatedTrade(bytes32 tradeId, address token, address seller, uint256 amount, uint256 originalListedPrice, uint256 finalNegotiatedPrice) payable',
 ];
 
 // ── Main component ───────────────────────────────────────────────
@@ -224,66 +227,65 @@ export default function MyBidsPage() {
     const toastId = toast.loading('Preparing settlement…');
     try {
       // 1. Get settlement data from backend (marks bid as 'confirmed')
-      setStep(bid.id, 'Getting KYC authorization…');
-      toast.loading('Getting KYC authorization from server…', { id: toastId });
+      setStep(bid.id, 'Preparing settlement details…');
+      toast.loading('Preparing on-chain settlement…', { id: toastId });
       const { settlement_data } = await confirmBid(bid.id);
 
       const {
         seller_wallet,
-        seller_signature,
-        seller_nonce,
         token_contract_address,
         quantity,
         price_per_token,
       } = settlement_data;
 
-      if (!seller_signature) throw new Error('Seller has not signed this listing yet. Contact the seller.');
+      if (!seller_wallet) throw new Error('Seller wallet address is missing from this listing.');
       if (!token_contract_address) throw new Error('Token contract address is missing from this listing.');
 
-      // 2. Expiry guard: seller signed with a 7-day window from listing creation
-      //    We use listing_created_at if available; otherwise recompute safely.
-      const expiry = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60;
       const tokenAmount = ethers.parseUnits(String(quantity), 18);
       const pricePerToken = ethers.parseEther(String(price_per_token));
       const totalEth = (tokenAmount * pricePerToken) / ethers.WeiPerEther;
+      const tradeId = ethers.id(bid.id);
 
-      // 3. Get KYC authorization signature from backend
-      toast.loading('Verifying KYC credentials…', { id: toastId });
-      const kycRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'}/api/marketplace/kyc-signature`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${(await (await import('@/utils/supabase/client')).createClient().auth.getSession()).data.session?.access_token}`,
-        },
-        body: JSON.stringify({
-          buyer_wallet: walletAddress,
-          seller_wallet,
-          chain_id: 11155111,
-        }),
-      });
-      if (!kycRes.ok) {
-        const kycErr = await kycRes.json().catch(() => ({}));
-        throw new Error(kycErr.error || 'KYC authorization failed — ensure both you and the seller are KYC-verified.');
-      }
-      const { kycSignature, kycDeadline } = await kycRes.json();
-
-      toast.loading('Please confirm in MetaMask…', { id: toastId });
+      toast.loading('Please confirm transaction in MetaMask…', { id: toastId });
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       const marketplace = new ethers.Contract(marketplaceAddress, MARKETPLACE_ABI, signer);
 
-      const tx = await marketplace.fillOrder(
-        seller_wallet,
-        token_contract_address,
-        tokenAmount,
-        pricePerToken,
-        seller_nonce,
-        expiry,
-        seller_signature,
-        kycDeadline,
-        kycSignature,
-        { value: totalEth },
-      );
+      let tx;
+      if (bid.status === 'auto_accepted' || bid.token_orders?.listing_mode === 'auto') {
+        const deadline = bid.token_orders?.listing_deadline
+          ? Math.floor(new Date(bid.token_orders.listing_deadline).getTime() / 1000)
+          : 0;
+        tx = await marketplace.settleAuctionTrade(
+          tradeId,
+          token_contract_address,
+          seller_wallet,
+          tokenAmount,
+          pricePerToken,
+          deadline,
+          { value: totalEth }
+        );
+      } else if (bid.status === 'counter_accepted' && bid.counter_price_per_token && bid.original_bid_price) {
+        const originalListedPrice = ethers.parseEther(String(bid.original_bid_price || bid.token_orders?.price || price_per_token));
+        tx = await marketplace.settleNegotiatedTrade(
+          tradeId,
+          token_contract_address,
+          seller_wallet,
+          tokenAmount,
+          originalListedPrice,
+          pricePerToken,
+          { value: totalEth }
+        );
+      } else {
+        tx = await marketplace.settleTrade(
+          tradeId,
+          token_contract_address,
+          seller_wallet,
+          tokenAmount,
+          pricePerToken,
+          { value: totalEth }
+        );
+      }
 
       toast.loading('Waiting for on-chain confirmation…', { id: toastId });
       const receipt = await tx.wait();
@@ -324,7 +326,7 @@ export default function MyBidsPage() {
   // Helper to check if deadline/expiry has passed
   const isBidExpired = (b: any) => {
     if (b.status === 'expired') return true;
-    if (['accepted', 'confirmed', 'counter_accepted'].includes(b.status) && b.accept_deadline) {
+    if (['accepted', 'confirmed', 'counter_accepted', 'auto_accepted'].includes(b.status) && b.accept_deadline) {
       return new Date(b.accept_deadline).getTime() < Date.now();
     }
     if (b.status === 'counter_offered' && b.counter_expires_at) {
@@ -337,9 +339,9 @@ export default function MyBidsPage() {
   };
 
   // ── Render ───────────────────────────────────────────────────
-  // shafqaat implemented — active bids include counter states
+  // shafqaat implemented — active bids include counter states and auto_accepted
   const activeBids = bids.filter(
-    (b) => ['pending', 'accepted', 'confirmed', 'counter_offered', 'counter_accepted'].includes(b.status) && !isBidExpired(b)
+    (b) => ['pending', 'auto_accepted', 'accepted', 'confirmed', 'counter_offered', 'counter_accepted'].includes(b.status) && !isBidExpired(b)
   );
   const historicBids = bids.filter(
     (b) => ['completed', 'rejected', 'cancelled', 'expired', 'counter_rejected'].includes(b.status) || isBidExpired(b)
@@ -389,7 +391,8 @@ export default function MyBidsPage() {
               <div className="flex flex-col gap-3">
                 {activeBids.map((bid) => {
                   const campaign = bid.token_orders?.campaigns;
-                  const isAccepted = ['accepted', 'confirmed', 'counter_accepted'].includes(bid.status);
+                  const isAccepted = ['accepted', 'confirmed', 'counter_accepted', 'auto_accepted'].includes(bid.status);
+                  const isAutoWon = bid.status === 'auto_accepted';
                   const isCounterOffered = bid.status === 'counter_offered';
                   const isProcessing = processingId === bid.id;
                   const step = progressMsg[bid.id];
@@ -409,8 +412,22 @@ export default function MyBidsPage() {
                         boxShadow: '0 0 24px color-mix(in srgb, var(--chart-4) 12%, transparent)',
                       } : {}}
                     >
-                      {/* Accepted banner with live countdown timer */}
-                      {isAccepted && (
+                      {/* Auction Won banner — shown for auto_accepted bids */}
+                      {isAutoWon && (
+                        <div
+                          className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl px-4 py-3 text-sm font-semibold"
+                          style={{ background: 'rgba(245,158,11,0.12)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span>🏆</span>
+                            <span>You won the auction! Confirm &amp; Pay within 24 hours to receive your tokens.</span>
+                          </div>
+                          <CountdownTimer deadline={bid.accept_deadline} label="Pay Before" />
+                        </div>
+                      )}
+
+                      {/* Accepted banner with live countdown timer (manual accept) */}
+                      {isAccepted && !isAutoWon && (
                         <div
                           className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl px-4 py-3 text-sm font-semibold"
                           style={{ background: 'color-mix(in srgb, var(--chart-3) 12%, transparent)', color: 'var(--chart-3)' }}
@@ -451,7 +468,7 @@ export default function MyBidsPage() {
 
                           {bid.counter_message && (
                             <p className="text-xs text-muted-foreground italic bg-muted/30 p-2.5 rounded-lg border border-border/30">
-                              "{bid.counter_message}"
+                              &ldquo;{bid.counter_message}&rdquo;
                             </p>
                           )}
 
@@ -494,7 +511,9 @@ export default function MyBidsPage() {
                       {/* Expiry info */}
                       <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
                         <Clock size={12} />
-                        {isAccepted ? (
+                        {isAutoWon ? (
+                          <span>Pay deadline: {timeLeft(bid.accept_deadline)}</span>
+                        ) : isAccepted ? (
                           <span>Accept deadline: {timeLeft(bid.accept_deadline)}</span>
                         ) : isCounterOffered ? (
                           <span>Response deadline: {timeLeft(bid.counter_expires_at)}</span>

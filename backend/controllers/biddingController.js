@@ -102,7 +102,7 @@ async function placeBid(req, res) {
     // 1. Verify the listing exists, is a sell order, and is still open
     const { data: listing, error: listingErr } = await supabaseAdmin
       .from('token_orders')
-      .select('id, campaign_id, investor_id, side, status, quantity_remaining, price, auto_accept_price_per_token')
+      .select('id, campaign_id, investor_id, side, status, quantity_remaining, price, auto_accept_price_per_token, listing_mode, listing_deadline, min_bid_price_per_token')
       .eq('id', listing_id)
       .single();
 
@@ -146,9 +146,25 @@ async function placeBid(req, res) {
       return res.status(403).json({ error: 'Your account is restricted from trading' });
     }
 
-    // 4. Calculate bid expiry
-    const bidExpiresAt = new Date();
-    bidExpiresAt.setDate(bidExpiresAt.getDate() + Number(bid_expires_days));
+    // Validate minimum bid price floor (auto-mode listings may have a floor price)
+    if (listing.min_bid_price_per_token && Number(bid_price_per_token) < Number(listing.min_bid_price_per_token)) {
+      return res.status(400).json({
+        error: `Your bid of ${bid_price_per_token} ETH/token is below the seller's minimum bid price of ${listing.min_bid_price_per_token} ETH/token`,
+      });
+    }
+
+    // For auto-mode listings, check if deadline has already passed
+    const isAutoMode = listing.listing_mode === 'auto';
+    if (isAutoMode && listing.listing_deadline && new Date(listing.listing_deadline) < new Date()) {
+      return res.status(400).json({ error: 'This auction has ended. No more bids are being accepted.' });
+    }
+
+    // 4. Calculate bid expiry:
+    //    - auto mode: bid window = listing_deadline (buyers can only bid before deadline)
+    //    - manual mode: buyer-specified days from now
+    const bidExpiresAt = isAutoMode && listing.listing_deadline
+      ? new Date(listing.listing_deadline)
+      : (() => { const d = new Date(); d.setDate(d.getDate() + Number(bid_expires_days)); return d; })();
 
     // shafqaat implemented — Fix P3: Auto-accept threshold check
     const isAutoAccepted = Boolean(
@@ -174,7 +190,7 @@ async function placeBid(req, res) {
         quantity: Number(quantity),
         status: isAutoAccepted ? 'accepted' : 'pending',
         accept_deadline: acceptDeadline ? acceptDeadline.toISOString() : null,
-        bid_expires_at: bidExpiresAt.toISOString(),
+        bid_expires_at: bidExpiresAt instanceof Date ? bidExpiresAt.toISOString() : bidExpiresAt,
       }])
       .select()
       .single();
@@ -263,10 +279,24 @@ async function placeBid(req, res) {
       }),
     ]);
 
+    // Fire-and-forget: debounced fair price recalculation (does NOT delay response)
+    setImmediate(() => _scheduleFairPriceOnBid(listing.campaign_id, listing.price));
+
     return res.status(201).json({ bid, message: 'Bid placed successfully. The seller will be notified.' });
   } catch (err) {
     console.error('[placeBid] error:', err);
-    return res.status(500).json({ error: 'Failed to place bid' });
+    return res.status(500).json({ error: err?.message || 'Failed to place bid' });
+  }
+}
+
+// ─── Fair Price: debounced recalc after placeBid ──────────────────────────────
+// Uses debouncedRecalc (10 s) to handle rapid successive bids gracefully.
+function _scheduleFairPriceOnBid(campaignId, listingPrice) {
+  try {
+    const { debouncedRecalc } = require('../services/fairPriceService');
+    debouncedRecalc(campaignId, listingPrice);
+  } catch (e) {
+    // Service not yet initialized or import error — safe to ignore
   }
 }
 
@@ -295,7 +325,7 @@ async function getListingBids(req, res) {
       return res.status(403).json({ error: 'You are not the owner of this listing' });
     }
 
-    // 2. Fetch all bids, join buyer profile info
+    // 2. Fetch all bids, join buyer profile info — include auto_accepted in status filter
     const { data: bids, error: bidsErr } = await supabaseAdmin
       .from('token_bids')
       .select(`
@@ -304,7 +334,7 @@ async function getListingBids(req, res) {
         profiles:buyer_id ( full_name, display_name, identity_verified )
       `)
       .eq('listing_id', listingId)
-      .in('status', ['pending', 'accepted', 'confirmed', 'completed', 'rejected', 'expired'])
+      .in('status', ['pending', 'auto_accepted', 'accepted', 'confirmed', 'completed', 'rejected', 'expired', 'counter_offered', 'counter_accepted', 'counter_rejected'])
       .order('bid_price_per_token', { ascending: false }); // highest bid first
 
     if (bidsErr) throw bidsErr;
@@ -521,6 +551,7 @@ async function getMyBids(req, res) {
         bid_expires_at, accept_deadline, tx_hash, created_at, updated_at,
         token_orders:listing_id (
           price, quantity_remaining, seller_wallet_address, seller_signature, seller_nonce,
+          listing_mode, listing_deadline, min_bid_price_per_token,
           campaigns:campaign_id ( title, category, token_contract_address, token_symbol )
         )
       `)
@@ -664,8 +695,8 @@ async function confirmBid(req, res) {
 
     if (bidErr || !bid) return res.status(404).json({ error: 'Bid not found' });
     if (bid.buyer_id !== buyerId) return res.status(403).json({ error: 'Not your bid' });
-    // shafqaat implemented — counter_accepted bids also proceed through the confirm flow
-    if (!['accepted', 'confirmed', 'counter_accepted'].includes(bid.status)) {
+    // auto_accepted bids also proceed through confirm → complete like accepted and counter_accepted
+    if (!['accepted', 'confirmed', 'counter_accepted', 'auto_accepted'].includes(bid.status)) {
       return res.status(400).json({ error: 'Only accepted or confirmed bids can be processed' });
     }
     if (bid.accept_deadline && new Date(bid.accept_deadline) < new Date()) {
@@ -688,7 +719,7 @@ async function confirmBid(req, res) {
       .update({ status: 'confirmed', updated_at: new Date().toISOString() })
       .eq('id', bidId);
 
-    // shafqaat implemented — Fix P3: Calculate 2.0% platform fee matching secondaryMarketplace.sol
+    // shafqaat implemented — for counter_accepted use counter price; for auto_accepted use bid_price_per_token
     const effectivePrice = bid.status === 'counter_accepted' && bid.counter_price_per_token
       ? Number(bid.counter_price_per_token)
       : Number(bid.bid_price_per_token);
@@ -736,15 +767,17 @@ async function completeBid(req, res) {
 
   try {
     // Fetch bid including buyer_wallet for on-chain sender verification
+    // IMPORTANT: counter_price_per_token MUST be included so effectivePrice is correct for counter_accepted bids
     const { data: bid, error: bidErr } = await supabaseAdmin
       .from('token_bids')
-      .select('id, buyer_id, buyer_wallet, listing_id, campaign_id, quantity, status')
+      .select('id, buyer_id, buyer_wallet, listing_id, campaign_id, quantity, status, bid_price_per_token, counter_price_per_token')
       .eq('id', bidId)
       .single();
 
     if (bidErr || !bid) return res.status(404).json({ error: 'Bid not found' });
     if (bid.buyer_id !== buyerId) return res.status(403).json({ error: 'Not your bid' });
-    if (!['accepted', 'confirmed', 'counter_accepted'].includes(bid.status)) {
+    // auto_accepted bids can also be completed once buyer pays on-chain
+    if (!['accepted', 'confirmed', 'counter_accepted', 'auto_accepted'].includes(bid.status)) {
       return res.status(400).json({ error: 'Only accepted or confirmed bids can be marked as completed' });
     }
 
@@ -759,7 +792,7 @@ async function completeBid(req, res) {
       });
     }
 
-    // shafqaat implemented — Fix P1 & P2: Atomic completion, quantity decrement, and token_trades recording
+    // For counter_accepted use counter price; for auto_accepted use bid_price_per_token (no negotiation)
     const effectivePrice = (bid.status === 'counter_accepted' && bid.counter_price_per_token)
       ? Number(bid.counter_price_per_token)
       : Number(bid.bid_price_per_token);
@@ -836,6 +869,18 @@ async function completeBid(req, res) {
           settlement_status: 'settled',
           executed_at: new Date().toISOString(),
         }]);
+
+        // ── Fair Price: immediate recalc after a real settled trade ────────────
+        // A new settled trade is the strongest market signal — recalculate
+        // immediately (no debounce) and may promote to Tier 1 pricing.
+        try {
+          const { triggerFairPriceRecalculation } = require('../services/fairPriceService');
+          triggerFairPriceRecalculation(bid.campaign_id, effectivePrice).catch((fpErr) =>
+            console.warn('[completeBid] Fair price recalc failed silently:', fpErr.message)
+          );
+        } catch (fpImportErr) {
+          // Service not yet initialized — safe to ignore
+        }
       } catch (tradeErr) {
         console.warn('[completeBid] Could not insert into token_trades (check migration 0008):', tradeErr.message);
       }
@@ -923,8 +968,9 @@ async function rejectBid(req, res) {
     if (bid.token_orders?.investor_id !== sellerId) {
       return res.status(403).json({ error: 'You are not the seller for this listing' });
     }
-    if (bid.status !== 'pending') {
-      return res.status(400).json({ error: `Cannot reject a bid with status: ${bid.status}` });
+    // Sellers can reject both pending bids AND their own counter_offered bids
+    if (!['pending', 'counter_offered'].includes(bid.status)) {
+      return res.status(400).json({ error: `Cannot reject a bid with status: ${bid.status}. Only pending or counter-offered bids can be rejected.` });
     }
 
     const { data: updatedBid, error: updateErr } = await supabaseAdmin
@@ -1360,6 +1406,88 @@ async function modifyBid(req, res) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// processAuctionDeadlines — Node.js fallback cron (called every 60s from index.js)
+// Calls the pg_cron DB function and then sends push notifications to winners.
+// This is a safety net in case pg_cron is not available in the Supabase plan.
+// ─────────────────────────────────────────────────────────────────────────────
+async function processAuctionDeadlines() {
+  try {
+    // Step 1: Let the DB function do the heavy lifting (atomic update)
+    const { error: rpcErr } = await supabaseAdmin.rpc('fn_process_auction_deadlines');
+    if (rpcErr) {
+      console.error('[AuctionSweep] DB function error:', rpcErr.message);
+      return;
+    }
+
+    // Step 2: Find all bids that were just auto_accepted (no notification sent yet)
+    // We check for bids updated in the last 2 minutes to catch this run and the previous
+    const twoMinsAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const { data: newlyAccepted } = await supabaseAdmin
+      .from('token_bids')
+      .select(`
+        id, buyer_id, listing_id, campaign_id, bid_price_per_token, quantity,
+        token_orders:listing_id ( investor_id, campaigns:campaign_id ( title ) )
+      `)
+      .eq('status', 'auto_accepted')
+      .gte('updated_at', twoMinsAgo);
+
+    if (!newlyAccepted || newlyAccepted.length === 0) return;
+
+    // Step 3: Send notifications to each winner and the seller
+    for (const bid of newlyAccepted) {
+      const campaignTitle = bid.token_orders?.campaigns?.title || 'a listing';
+      const sellerId = bid.token_orders?.investor_id;
+
+      await Promise.allSettled([
+        // Notify winning buyer
+        createNotification({
+          userId: bid.buyer_id,
+          type: 'bid_accepted',
+          title: '🎉 You Won the Auction!',
+          message: `Your bid of ${bid.bid_price_per_token} ETH/token on "${campaignTitle}" won the auction! Confirm & Pay within 24 hours to receive your tokens.`,
+          link: '/investor-dashboard/my-bids',
+          metadata: { bid_id: bid.id, listing_id: bid.listing_id, campaign_id: bid.campaign_id },
+        }),
+        // Notify seller
+        sellerId ? createNotification({
+          userId: sellerId,
+          type: 'bid_accepted',
+          title: 'Auction Ended — Winner Selected',
+          message: `Your "${campaignTitle}" auction ended. A buyer has won and has 24 hours to confirm payment.`,
+          link: '/investor-dashboard/my-listings',
+          metadata: { bid_id: bid.id, listing_id: bid.listing_id, campaign_id: bid.campaign_id },
+        }) : Promise.resolve(),
+      ]);
+    }
+
+    // Step 4: Also notify bidders who were expired in this run
+    const { data: justExpired } = await supabaseAdmin
+      .from('token_bids')
+      .select('id, buyer_id, listing_id, campaign_id, token_orders:listing_id ( campaigns:campaign_id ( title ) )')
+      .eq('status', 'expired')
+      .gte('updated_at', twoMinsAgo);
+
+    if (justExpired && justExpired.length > 0) {
+      for (const bid of justExpired) {
+        const campaignTitle = bid.token_orders?.campaigns?.title || 'a listing';
+        await createNotification({
+          userId: bid.buyer_id,
+          type: 'bid_cancelled',
+          title: 'Auction Ended — Not Selected',
+          message: `The auction for "${campaignTitle}" has ended. Your bid was not selected.`,
+          link: '/investor-dashboard/my-bids',
+          metadata: { bid_id: bid.id, listing_id: bid.listing_id, campaign_id: bid.campaign_id },
+        }).catch(() => {});
+      }
+    }
+
+    console.log(`[AuctionSweep] Processed ${newlyAccepted.length} auction winner(s) at ${new Date().toISOString()}`);
+  } catch (err) {
+    console.error('[AuctionSweep] Unexpected error:', err.message);
+  }
+}
+
 module.exports = {
   placeBid,
   getListingBids,
@@ -1376,5 +1504,7 @@ module.exports = {
   rejectCounter,
   // shafqaat implemented — bid modification (Fix P3)
   modifyBid,
+  // Automated auction deadline processing (new)
+  processAuctionDeadlines,
 };
 

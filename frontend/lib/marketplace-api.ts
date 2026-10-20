@@ -19,6 +19,10 @@ export type OrderRequest = {
   wallet_address : string | undefined ;
   // shafqaat implemented — Fix P3: optional auto-accept threshold price
   auto_accept_price_per_token?: number;
+  // Automated auction fields
+  listing_mode?: 'manual' | 'auto';
+  listing_deadline?: string;
+  min_bid_price_per_token?: number;
 };
 
 export type OrderResponse = { order: any };
@@ -33,6 +37,10 @@ export type MarketplaceSellOrder = {
   created_at: string;
   token_symbol: string;
   seller_wallet_address: string | null;
+  // Automated auction fields
+  listing_mode?: 'manual' | 'auto';
+  listing_deadline?: string | null;
+  min_bid_price_per_token?: number | null;
   campaign: {
     id: string;
     title: string | null;

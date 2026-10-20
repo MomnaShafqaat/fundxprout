@@ -6,13 +6,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/utils/supabase/client';
-import { getListingBids, acceptBid, type TokenBid } from '@/lib/bidding-api';
+import { getListingBids, acceptBid, rejectBid, type TokenBid } from '@/lib/bidding-api';
 import { cancelSellOrder } from '@/lib/marketplace-api';
 import { toast } from 'sonner';
 import {
   Loader2, ChevronDown, ChevronUp, CheckCircle2, Trophy,
   Clock, AlertCircle, RotateCcw, ShieldCheck, ArrowUpDown, Filter, Trash2,
-  Handshake, Sparkles,
+  Handshake, Sparkles, XCircle,
 } from 'lucide-react';
 import CounterOfferModal from '@/components/bidding/CounterOfferModal';
 
@@ -27,6 +27,10 @@ type Listing = {
   seller_signature: string | null;
   // shafqaat implemented — Fix P3: auto-accept threshold price on listings
   auto_accept_price_per_token?: number | null;
+  // Auction mode fields
+  listing_mode?: 'manual' | 'auto';
+  listing_deadline?: string | null;
+  min_bid_price_per_token?: number | null;
   created_at: string;
   campaign?: { title: string | null; category: string | null; token_contract_address: string | null };
 };
@@ -57,6 +61,7 @@ function ListingRow({ listing, userId, onRefresh }: { listing: Listing; userId: 
   const [bidsLoading, setBidsLoading] = useState(false);
   const [bidsError, setBidsError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState<string | null>(null);
+  const [rejecting, setRejecting] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   // shafqaat implemented — Fix P3: Counter offer modal state for seller
   const [counterModalBid, setCounterModalBid] = useState<TokenBid | null>(null);
@@ -94,6 +99,21 @@ function ListingRow({ listing, userId, onRefresh }: { listing: Listing; userId: 
       toast.error(err.message || 'Failed to accept bid.', { id: toastId });
     } finally {
       setAccepting(null);
+    }
+  }
+
+  async function handleReject(bidId: string) {
+    if (!confirm('Reject this bid? The buyer will be notified. This cannot be undone.')) return;
+    setRejecting(bidId);
+    const toastId = toast.loading('Rejecting bid…');
+    try {
+      await rejectBid(bidId);
+      toast.success('Bid rejected. The buyer has been notified.', { id: toastId });
+      await loadBids();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to reject bid.', { id: toastId });
+    } finally {
+      setRejecting(null);
     }
   }
 
@@ -166,6 +186,12 @@ function ListingRow({ listing, userId, onRefresh }: { listing: Listing; userId: 
             {listing.auto_accept_price_per_token && (
               <span className="flex items-center gap-1 rounded-xl bg-chart-3/15 px-2 py-0.5 text-[10px] font-bold text-chart-3 border border-chart-3/30">
                 <Sparkles size={9} /> Auto-Accept: {listing.auto_accept_price_per_token} ETH
+              </span>
+            )}
+            {/* Automated auction mode indicator */}
+            {listing.listing_mode === 'auto' && (
+              <span className="flex items-center gap-1 rounded-xl bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-500 border border-amber-500/30">
+                <Trophy size={9} /> Auto Auction {listing.listing_deadline ? `· Ends ${timeLeft(listing.listing_deadline)}` : ''}
               </span>
             )}
           </div>
@@ -259,7 +285,9 @@ function ListingRow({ listing, userId, onRefresh }: { listing: Listing; userId: 
 
               {filteredAndSortedBids.map((bid, idx) => {
                 const isAccepted = ['accepted', 'confirmed', 'completed'].includes(bid.status);
+                const isCounterAccepted = bid.status === 'counter_accepted';
                 const isAccepting = accepting === bid.id;
+                const isRejecting = rejecting === bid.id;
                 const buyer = bid.profiles;
 
                 return (
@@ -319,6 +347,13 @@ function ListingRow({ listing, userId, onRefresh }: { listing: Listing; userId: 
                           style={{ color: 'var(--chart-3)', background: 'color-mix(in srgb, var(--chart-3) 12%, transparent)' }}>
                           <CheckCircle2 size={11} /> Accepted
                         </span>
+                      ) : isCounterAccepted ? (
+                        <span className="flex items-center gap-1 rounded-xl px-2 py-1 text-[11px] font-bold text-chart-3 bg-chart-3/15 border border-chart-3/30">
+                          <CheckCircle2 size={11} /> Counter Accepted
+                          {bid.counter_price_per_token && (
+                            <span className="ml-1 opacity-75">@ {bid.counter_price_per_token} ETH</span>
+                          )}
+                        </span>
                       ) : bid.status === 'counter_offered' ? (
                         <span className="flex items-center gap-1 rounded-xl px-2.5 py-1 text-[11px] font-bold text-chart-4 bg-chart-4/15 border border-chart-4/30">
                           <Handshake size={11} /> Counter Sent ({bid.counter_price_per_token} ETH)
@@ -331,11 +366,15 @@ function ListingRow({ listing, userId, onRefresh }: { listing: Listing; userId: 
                         <span className="flex items-center gap-1 rounded-xl px-2 py-1 text-[11px] font-bold text-destructive border border-destructive/20 bg-destructive/10">
                           Rejected
                         </span>
+                      ) : bid.status === 'counter_rejected' ? (
+                        <span className="flex items-center gap-1 rounded-xl px-2 py-1 text-[11px] font-bold text-muted-foreground border border-border bg-muted/40">
+                          Buyer Declined Counter
+                        </span>
                       ) : (
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           <button
                             onClick={() => handleAccept(bid.id)}
-                            disabled={!!accepting || !listing.seller_signature}
+                            disabled={!!accepting || !!rejecting || !listing.seller_signature}
                             title={!listing.seller_signature ? 'Sign your listing first before accepting bids' : ''}
                             className="rounded-xl px-3 py-1.5 text-xs font-bold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
                             style={{ background: 'linear-gradient(135deg, var(--ring), var(--chart-5))' }}
@@ -346,11 +385,21 @@ function ListingRow({ listing, userId, onRefresh }: { listing: Listing; userId: 
                           {/* shafqaat implemented — Fix P3: Counter-offer button */}
                           <button
                             onClick={() => setCounterModalBid(bid)}
-                            disabled={!!accepting}
+                            disabled={!!accepting || !!rejecting}
                             className="flex items-center gap-1 rounded-xl border border-chart-4/40 bg-chart-4/10 px-2.5 py-1.5 text-xs font-semibold text-chart-4 hover:bg-chart-4/20 transition-colors"
                           >
                             <Handshake size={12} />
                             Counter
+                          </button>
+
+                          {/* Reject button — available for pending and counter_offered bids */}
+                          <button
+                            onClick={() => handleReject(bid.id)}
+                            disabled={!!accepting || !!rejecting}
+                            className="flex items-center gap-1 rounded-xl border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive hover:text-white transition-colors"
+                          >
+                            {isRejecting ? <Loader2 size={12} className="animate-spin" /> : <XCircle size={12} />}
+                            Reject
                           </button>
                         </div>
                       )}

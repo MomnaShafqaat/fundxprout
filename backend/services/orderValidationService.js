@@ -15,25 +15,46 @@ class ValidationError extends Error {
 async function validateTradeable(campaignId) {
   const { data: campaign, error: campErr } = await supabaseAdmin
     .from('campaigns')
-    .select('id, status, amount_pledged, funding_goal , goal_reached, is_expired, secondary_trading_enabled, flag_count, last_traded_price, price_per_token')
+    .select('id, status, amount_pledged, funding_goal, goal_reached, is_expired, secondary_trading_enabled, flag_count, last_traded_price, price_per_token, deadline')
     .eq('id', campaignId)
     .single();
 
   if (campErr || !campaign) throw new ValidationError('CAMPAIGN_NOT_FOUND', 'Campaign not found');
 
-  if (campaign.amount_pledged < campaign.funding_goal ) {
+  const isFunded = campaign.goal_reached === true || 
+    (campaign.funding_goal && Number(campaign.amount_pledged) >= Number(campaign.funding_goal)) ||
+    ['successful', 'funded', 'launched'].includes(campaign.status);
+
+  const isClosed = campaign.is_expired === true || 
+    (campaign.deadline && new Date(campaign.deadline) <= new Date()) ||
+    !campaign.deadline ||
+    isFunded;
+
+  if (!isFunded && !isClosed) {
     throw new ValidationError('CAMPAIGN_NOT_CLOSED', 'Campaign must be closed and funded before secondary trading');
   }
-  // successful campaign are tradeable on secondary marketplace automatically
-  // if (!campaign.secondary_trading_enabled) {
-  //   throw new ValidationError('TRADING_DISABLED', 'Secondary trading is not enabled for this campaign');
-  // }
+
+  // Auto-sync flags to DB so subsequent checks and queries are consistent
+  if (isFunded && (!campaign.is_expired || !campaign.goal_reached || !campaign.secondary_trading_enabled)) {
+    await supabaseAdmin
+      .from('campaigns')
+      .update({
+        goal_reached: true,
+        is_expired: true,
+        secondary_trading_enabled: true,
+      })
+      .eq('id', campaignId);
+  }
+
+  if (campaign.secondary_trading_enabled === false) {
+    throw new ValidationError('TRADING_DISABLED', 'Secondary trading is disabled for this campaign');
+  }
 
   const { data: settings } = await supabaseAdmin
     .from('campaign_secondary_market_settings')
     .select('trading_enabled, price_band_percent, min_order_size, max_order_size, lockup_days')
     .eq('campaign_id', campaignId)
-    .single();
+    .maybeSingle();
 
   return { campaign, settings };
 }
@@ -82,10 +103,13 @@ async function validateInvestor(investorId) {
 
 /** Rule 11: order price must sit within the configured band of the reference price. */
 function validatePriceBand(price, campaign, settings) {
+  // Only enforce price band if explicitly configured in settings
+  if (!settings?.price_band_percent) return;
+
   const reference = campaign.last_traded_price ?? campaign.price_per_token;
   if (!reference) return; // no reference yet (never traded, no issue price) — allow
 
-  const bandPercent = settings?.price_band_percent ?? 20;
+  const bandPercent = settings.price_band_percent;
   const lower = reference * (1 - bandPercent / 100);
   const upper = reference * (1 + bandPercent / 100);
 

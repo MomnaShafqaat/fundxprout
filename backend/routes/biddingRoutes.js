@@ -25,6 +25,9 @@ const {
   modifyBid,
 } = require('../controllers/biddingController');
 
+const { getCampaignFairPrice } = require('../controllers/fairPriceController');
+
+
 // ── Buyer routes ──────────────────────────────────────────────────────────────
 router.post('/bids', authenticate, biddingActionLimiter, placeBid);                            // Place a bid on a listing
 router.get('/bids/my', authenticate, getMyBids);                                              // View all my bids
@@ -51,5 +54,10 @@ router.post('/kyc-signature', authenticate, biddingActionLimiter, getKycSignatur
 router.get('/listings/:listingId/bids', authenticate, getListingBids);                         // View all bids on a listing
 router.post('/listings/:listingId/accept-bid/:bidId', authenticate, biddingActionLimiter, acceptBid); // Accept via full path
 router.post('/listings/:listingId/sign', authenticate, biddingActionLimiter, signListing);     // Store EIP-712 seller signature
+
+// ── AI Fair Price ─────────────────────────────────────────────────────────────
+// GET /api/marketplace/campaigns/:campaignId/fair-price?listingPrice=0.15&refresh=true
+// Public — no auth required (the data is used for UI guidance, not trading actions)
+router.get('/campaigns/:campaignId/fair-price', getCampaignFairPrice);
 
 module.exports = router;

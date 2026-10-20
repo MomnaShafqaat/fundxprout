@@ -38,4 +38,32 @@ describe("EquitySecondaryMarketplace", function () {
       marketplace.connect(buyer).settleTrade(ethers.id("unapproved"), await token.getAddress(), seller.address, amount, price, { value: total })
     ).to.be.reverted;
   });
+
+  it("settles an automated auction trade with deadline and emits AuctionTradeSettled", async function () {
+    const { treasury, seller, buyer, token, marketplace, amount, price } = await deployFixture();
+    const total = (amount * price) / ethers.WeiPerEther;
+    const fee = (total * 200n) / 10_000n;
+    const tradeId = ethers.id("auction-trade-uuid-1");
+    const treasuryBefore = await ethers.provider.getBalance(treasury.address);
+    const deadline = Math.floor(Date.now() / 1000);
+
+    await expect(
+      marketplace.connect(buyer).settleAuctionTrade(
+        tradeId,
+        await token.getAddress(),
+        seller.address,
+        amount,
+        price,
+        deadline,
+        { value: total }
+      )
+    )
+      .to.emit(marketplace, "AuctionTradeSettled")
+      .withArgs(tradeId, await token.getAddress(), buyer.address, seller.address, amount, total, fee, deadline)
+      .and.to.emit(marketplace, "TradeSettled")
+      .withArgs(tradeId, await token.getAddress(), buyer.address, seller.address, amount, total, fee);
+
+    expect(await token.balanceOf(buyer.address)).to.equal(amount);
+    expect(await ethers.provider.getBalance(treasury.address)).to.equal(treasuryBefore + fee);
+  });
 });

@@ -186,10 +186,34 @@ app.get('/', (req, res) => {
   res.send('FundXprout Backend Running');
 });
 
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
+});
+
 const server = http.createServer(app);
 initMarketplaceSocket(server);
+
+// Initialize Supabase realtime listeners for AI fair price auto-recalculation.
+// Fires whenever a token_trade is settled or a new bid is placed.
+const { initRealtimeListeners } = require('./services/fairPriceService');
+initRealtimeListeners();
+
+// ── Auction Deadline Fallback Cron ──────────────────────────────────────────
+// Calls fn_process_auction_deadlines() every 60 seconds as a safety net in case
+// pg_cron is not available. The DB function is idempotent (deadline_processed=true
+// prevents double-execution), so running this and pg_cron simultaneously is safe.
+const { processAuctionDeadlines } = require('./controllers/biddingController');
+setInterval(() => {
+  processAuctionDeadlines().catch((err) =>
+    console.error('[AuctionSweep] Interval error:', err.message)
+  );
+}, 60 * 1000); // every 60 seconds
 
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   scorePendingCampaignsOnStartup();
+  // Run auction sweep immediately on startup to catch any deadlines missed during downtime
+  processAuctionDeadlines().catch((err) =>
+    console.error('[AuctionSweep] Startup sweep error:', err.message)
+  );
 });
