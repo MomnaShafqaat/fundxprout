@@ -14,14 +14,14 @@ contract CampaignFactory {
         string memory _name,
         string memory _symbol,
         uint256 _fundingGoal,
-        uint256 _durationInDays,
+        uint256 _deadlineTimestamp,
         uint256 _pricePerToken
         ) public {
 
         BusinessCampaign newCampaign = new BusinessCampaign(
             _name,
             _fundingGoal,
-            _durationInDays,
+            _deadlineTimestamp,
             _pricePerToken,
             payable(msg.sender) //the owner calling this function is the owner and not this contract which is interpreted in business cmapaign if this isnt passed
         );

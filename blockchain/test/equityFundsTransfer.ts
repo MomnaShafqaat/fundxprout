@@ -30,7 +30,7 @@ describe("FundXProut Full Lifecycle Testing", function () {
     const campaignName: string = "Rise of Nexus";
     const tokenSymbol: string = "RON";
     const fundingGoal: BigNumberish = ethers.parseEther("5"); // 5 ETH target
-    const durationInDays: number = 30;
+    const deadlineTimestamp: number = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60;
     const pricePerToken: BigNumberish = ethers.parseEther("0.1"); // 1 token = 0.1 ETH
 
     // --- STEP 1: LAUNCH THE CAMPAIGN VIA FACTORY ---
@@ -38,7 +38,7 @@ describe("FundXProut Full Lifecycle Testing", function () {
       campaignName,
       tokenSymbol,
       fundingGoal,
-      durationInDays,
+      deadlineTimestamp,
       pricePerToken
     );
     const receipt = await tx.wait();
@@ -74,7 +74,7 @@ describe("FundXProut Full Lifecycle Testing", function () {
     await campaignContract.connect(investor).contribute({ value: ethers.parseEther("3") });
 
     // --- STEP 4: FAST-FORWARD TIME PAST DEADLINE ---
-    const durationInSeconds: number = durationInDays * 24 * 60 * 60;
+    const durationInSeconds: number = 30 * 24 * 60 * 60;
     await network.provider.send("evm_increaseTime", [durationInSeconds + 1]);
     await network.provider.send("evm_mine"); 
 

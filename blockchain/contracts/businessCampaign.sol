@@ -44,7 +44,7 @@ contract BusinessCampaign /*is Ownable*/ {
         //string memory _shortDescription, 
         //string memory _detailedPlan,
         uint256 _fundingGoal, 
-        uint256 _durationInDays,
+        uint256 _deadlineTimestamp,
         uint256 _pricePerToken,
         address payable _owner //owner wallet address so withdraw can work and contract knows that owner is the one who can withdraw funds and msg.sender doesnt evaluate to the parent campaign factory contract 
     ) payable {
@@ -54,8 +54,7 @@ contract BusinessCampaign /*is Ownable*/ {
         //startup.shortDescription = _shortDescription; // NEW FIELD
         //startup.detailedPlan = _detailedPlan;         // NEW FIELD
         startup.fundingGoal = _fundingGoal;
-        // Calculate deadline in Unix timestamp (seconds since epoch)
-        startup.deadline = block.timestamp + (_durationInDays * 1 days); 
+        startup.deadline = _deadlineTimestamp;
         startup.state = CampaignState.Active;
         startup.amountRaised = 0;
         startup.pricePerToken = _pricePerToken;
@@ -77,6 +76,7 @@ contract BusinessCampaign /*is Ownable*/ {
 
         function contribute() public payable onlyActive {
         require(msg.value > 0, "Contribution must be greater than zero.");
+            require(block.timestamp < startup.deadline, "Campaign deadline has passed.");
 
         // ── Insert Cap Check Here ──
         require(
@@ -84,7 +84,7 @@ contract BusinessCampaign /*is Ownable*/ {
             "Contribution exceeds the campaign funding goal."
         );
         
-        uint256 tokensToBuy = (msg.value / startup.pricePerToken) * 10**18;
+        uint256 tokensToBuy = (msg.value * 10**18) / startup.pricePerToken;
         
         // 1. Record the contribution amount for the investor
         contributions[msg.sender] += msg.value;

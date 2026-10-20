@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState, useMemo } from "react";
 import { useActionState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { launchBusinessCampaign } from "@/lib/owner/launchCampaign";
+import { handleLaunchSubmit } from "@/lib/owner/launchCampaign";
 import { saveDraftCampaign } from "@/lib/action";
 import CampaignStatusButton from "@/components/campaign-status-button";
 import CampaignDocUpload from "@/components/campaign-doc-upload";
@@ -26,11 +26,28 @@ function getInitialFormState(draftCampaign) {
       draftCampaign?.funding_goal ??
       "",
     duration: draftCampaign?.duration ?? "",
+    deadline: draftCampaign?.deadline ?? "",
     category: draftCampaign?.category ?? "",
     tokenSymbol: draftCampaign?.token_symbol ?? draftCampaign?.tokenSymbol ?? "",
     pricePerToken: draftCampaign?.price_per_token ?? draftCampaign?.pricePerToken ?? "",
     valuation: draftCampaign?.valuation ?? "",
   };
+}
+
+export function formatUTCtoLocalInput(utcDateString) {
+  if (!utcDateString) return "";
+  const date = new Date(utcDateString);
+  if (isNaN(date.getTime())) return "";
+
+  const pad = (n) => String(n).padStart(2, "0");
+
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());     // Uses local browser time
+  const minutes = pad(date.getMinutes()); // Uses local browser time
+
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
 const CAMPAIGN_DOCS = [
@@ -73,10 +90,16 @@ const CAMPAIGN_DOCS = [
 
 export { default as DocUpload } from "@/components/campaign-doc-upload";
 
+function getDeadlineTimestamp(deadline) {
+  if (!deadline) return "";
+  const timestamp = Math.floor(new Date(deadline).getTime() / 1000);
+  return Number.isSafeInteger(timestamp) && timestamp > 0 ? timestamp : "";
+}
+
 export function CreateCampaignForm() {
   const router = useRouter();
   const [state, formAction, isPending] = useActionState(
-    launchBusinessCampaign,
+    handleLaunchSubmit,
     null
   );
 
@@ -270,7 +293,10 @@ export function CreateCampaignForm() {
       if (!formData.goal || Number(formData.goal) <= 0) {
         throw new Error("Funding goal must be greater than zero");
       }
-      if (!formData.duration) throw new Error("Campaign duration is required");
+      const deadlineTimestamp = getDeadlineTimestamp(formData.deadline);
+      if (!deadlineTimestamp || deadlineTimestamp <= Math.floor(Date.now() / 1000)) {
+        throw new Error("Please choose a future campaign deadline");
+      }
       if (!formData.category) throw new Error("Category is required");
       if (!imageUrl) throw new Error("Campaign cover image is required");
       if (!formData.tokenSymbol.trim()) throw new Error("Token Symbol is required");
@@ -283,7 +309,8 @@ export function CreateCampaignForm() {
         title: formData.title,
         description: formData.description,
         goal: formData.goal,
-        duration: formData.duration,
+        duration: Math.max(1, Math.ceil((deadlineTimestamp - Math.floor(Date.now() / 1000)) / 86400)),
+        deadline: new Date(deadlineTimestamp * 1000).toISOString(),
         category: formData.category,
         imageUrl: imageUrl,
         tokenSymbol: formData.tokenSymbol,
@@ -301,7 +328,8 @@ export function CreateCampaignForm() {
         title: formData.title,
         description: formData.description,
         goal: formData.goal,
-        duration: formData.duration,
+        duration: Math.max(1, Math.ceil((deadlineTimestamp - Math.floor(Date.now() / 1000)) / 86400)),
+        deadline: new Date(deadlineTimestamp * 1000).toISOString(),
         category: formData.category,
         imageUrl: imageUrl,
         pitchDeckCid: docCids.pitch_deck_cid,
@@ -339,7 +367,7 @@ export function CreateCampaignForm() {
     formData.title,
     formData.description,
     formData.goal,
-    formData.duration,
+    formData.deadline,
     formData.category,
     formData.tokenSymbol,
     formData.pricePerToken,
@@ -414,6 +442,11 @@ export function CreateCampaignForm() {
             {/* Hidden fields to pass updated equity on launch */}
             <input type="hidden" name="equity_offered" value={equityCalculation.offered} />
             <input type="hidden" name="equity_retained" value={equityCalculation.retained} />
+            <input
+              type="hidden"
+              name="deadline_timestamp"
+              value={getDeadlineTimestamp(formData.deadline)}
+            />
 
             {/* ── Basic Info ─────────────────────────────────── */}
             <div>
@@ -450,13 +483,13 @@ export function CreateCampaignForm() {
               </div>
               <div>
                 <label className="block text-xs font-semibold text-gray-300 mb-2 uppercase tracking-wider">
-                  Duration (days) *
+                  Campaign Deadline *
                 </label>
                 <div className="relative">
                   <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-                  <input type="number" name="duration" value={formData.duration}
+                  <input type="datetime-local" name="deadline" value={formatUTCtoLocalInput(formData.deadline)}
                     onChange={handleInputChange} className={inputClass + " pl-10"}
-                    placeholder="30" min="1" max="90" required />
+                    min={new Date(Date.now() + 60 * 1000).toISOString().slice(0, 16)} required />
                 </div>
               </div>
             </div>

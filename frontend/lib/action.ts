@@ -311,6 +311,7 @@ export async function saveCampaignToDb(formData: any) {
     description: formData.description,
     funding_goal: formData.goal,
     duration: formData.duration,
+    deadline: formData.deadline ?? null,
     category: formData.category,
     owner: user.id,
     status: "launched",
@@ -385,6 +386,7 @@ export async function saveDraftCampaign(draftData: any) {
     description: draftData.description,
     funding_goal: draftData.goal,
     duration: draftData.duration,
+    deadline: draftData.deadline ?? null,
     category: draftData.category,
     owner: user.id,
     image_url: draftData.imageUrl ?? null,
@@ -1297,4 +1299,75 @@ export async function adminAuthenticateAction(email: string, secretKey: string, 
 
   revalidatePath("/admin-dashboard");
   return { success: true, redirectTo: "/admin-dashboard" };
+}
+
+// Call this before triggering MetaMask to verify permissions
+export async function verifyCampaignForLaunch(campaignId: string) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  const { data: campaign, error } = await supabase
+    .from("campaigns")
+    .select("*")
+    .eq("id", campaignId)
+    .eq("owner", user?.id)
+    .maybeSingle();
+
+  if (error || !campaign) return { error: error?.message || "Campaign not found" };
+  if (campaign.status !== "approved" && campaign.status !== "adjusted") {
+    return { error: `Campaign must be approved before launch. Status: ${campaign.status}` };
+  }
+
+  return { success: true, campaign };
+}
+
+export async function finalizeCampaignLaunch(formData: any) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "Unauthorized" };
+
+  // Always updated on launch
+  const updateData: Record<string, any> = {
+    contract_address: formData.contractAddress,
+    token_contract_address: formData.tokenContractAddress,
+    transaction_hash: formData.txHash,
+    status: "launched",
+  };
+
+  // Only update metadata fields IF provided (prevents overwriting with null)
+  if (formData.title) updateData.title = formData.title;
+  if (formData.description) updateData.description = formData.description;
+  if (formData.category) updateData.category = formData.category;
+  if (formData.goal) updateData.funding_goal = formData.goal;
+  if (formData.tokenSymbol) updateData.token_symbol = formData.tokenSymbol;
+  if (formData.pricePerToken) updateData.price_per_token = formData.pricePerToken;
+  if (formData.imageUrl) updateData.image_url = formData.imageUrl;
+  if (formData.deadline) updateData.deadline = formData.deadline;
+  if (formData.duration) updateData.duration = formData.duration;
+  
+  // Document CIDs (if they re-uploaded anything)
+  if (formData.pitchDeckCid) {
+    updateData.pitch_deck_cid = formData.pitchDeckCid;
+    updateData.pitch_deck_url = cidToUrl(formData.pitchDeckCid);
+  }
+  if (formData.businessPlanCid) {
+    updateData.business_plan_cid = formData.businessPlanCid;
+    updateData.business_plan_url = cidToUrl(formData.businessPlanCid);
+  }
+
+  const { data, error } = await supabase
+    .from("campaigns")
+    .update(updateData)
+    .eq("id", formData.campaignId)
+    .eq("owner", user.id)
+    .in("status", ["approved", "adjusted"])
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[finalizeCampaignLaunch] Supabase error:", error.message);
+    return { error: error.message };
+  }
+
+  return { success: true, campaignId: data?.id };
 }

@@ -11,7 +11,7 @@ describe("CampaignFactory", function () {
   const name = "Test Startup";
   const symbol = "TST";
   const fundingGoal = ethers.parseEther("10"); // 10 ETH
-  const durationInDays = 30;
+  const deadlineTimestamp = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60;
   const pricePerToken = ethers.parseEther("0.01"); // 0.01 ETH
 
   beforeEach(async function () {
@@ -32,7 +32,7 @@ describe("CampaignFactory", function () {
       name,
       symbol,
       fundingGoal,
-      durationInDays,
+      deadlineTimestamp,
       pricePerToken
     );
     
