@@ -18,19 +18,33 @@ const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPAB
 // Now only the frontend origin(s) listed in ALLOWED_ORIGINS are permitted.
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
   .split(',')
-  .map((o) => o.trim());
+  .map((o) => o.trim().replace(/\/$/, ''));
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  const cleanOrigin = origin.trim().replace(/\/$/, '');
+  if (allowedOrigins.includes(cleanOrigin)) return true;
+  try {
+    const { hostname } = new URL(cleanOrigin);
+    if (hostname.endsWith('.vercel.app')) return true;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
+  } catch (e) {
+    return false;
+  }
+  return false;
+}
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, server-to-server)
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (isOriginAllowed(origin)) {
         return callback(null, true);
       }
       return callback(new Error(`CORS: Origin "${origin}" is not allowed.`));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   })
 );
 

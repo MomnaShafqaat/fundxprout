@@ -3,9 +3,28 @@ const { Server } = require('socket.io');
 
 let io = null;
 
+function isSocketOriginAllowed(origin, callback) {
+  if (!origin) return callback(null, true);
+  const cleanOrigin = origin.trim().replace(/\/$/, '');
+  const allowed = (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:3000')
+    .split(',')
+    .map((o) => o.trim().replace(/\/$/, ''));
+  if (allowed.includes(cleanOrigin)) return callback(null, true);
+  try {
+    const { hostname } = new URL(cleanOrigin);
+    if (hostname.endsWith('.vercel.app') || hostname === 'localhost' || hostname === '127.0.0.1') {
+      return callback(null, true);
+    }
+  } catch (e) {}
+  return callback(null, false);
+}
+
 function initMarketplaceSocket(httpServer) {
   io = new Server(httpServer, {
-    cors: { origin: process.env.FRONTEND_URL || 'http://localhost:3000' },
+    cors: {
+      origin: isSocketOriginAllowed,
+      credentials: true,
+    },
   });
 
   // ── Existing: public campaign order-book rooms ────────────────────
